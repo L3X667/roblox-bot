@@ -68,17 +68,15 @@ STREAMERS = [
 last_updated_timestamp = None
 currently_live = set()
 
-# Fonction d'envoi de la boutique RL
+# Fonction d'envoi de l'alerte boutique RL propre
 async def send_rl_shop(target_channel):
-    image_url = "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=1000"
-
     embed = discord.Embed(
-        title="🛒 BOUTIQUE ROCKET LEAGUE DU JOUR",
-        description="Voici tous les objets disponibles aujourd'hui dans la boutique !\n\n*(La boutique change tous les jours)*",
+        title="🛒 BOUTIQUE ROCKET LEAGUE",
+        description="La rotation quotidienne de la boutique est en ligne en jeu !\n\n*Pense à lancer Rocket League pour découvrir les nouveaux objets et packs disponibles aujourd'hui.*",
         color=discord.Color.blue()
     )
-    embed.set_image(url=image_url)
-    embed.set_footer(text="Mise à jour quotidienne automatique")
+    embed.add_field(name="🔄 Rotation", value="Actualisation quotidienne automatique", inline=False)
+    embed.set_footer(text="L3X BOT - Alertes Rocket League")
     
     await target_channel.send(embed=embed)
 
