@@ -68,13 +68,13 @@ STREAMERS = [
 last_updated_timestamp = None
 currently_live = set()
 
-# Fonction d'envoi de la boutique RL avec la bonne URL d'image
+# Fonction d'envoi de la boutique RL
 async def send_rl_shop(target_channel):
-    image_url = "https://rocketleague.gg/images/item-shop/current.jpg"
+    image_url = "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=1000"
 
     embed = discord.Embed(
         title="🛒 BOUTIQUE ROCKET LEAGUE DU JOUR",
-        description="Voici tous les objets disponibles aujourd'hui dans la boutique !",
+        description="Voici tous les objets disponibles aujourd'hui dans la boutique !\n\n*(La boutique change tous les jours)*",
         color=discord.Color.blue()
     )
     embed.set_image(url=image_url)
