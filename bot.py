@@ -68,23 +68,19 @@ STREAMERS = [
 last_updated_timestamp = None
 currently_live = set()
 
-# Fonction d'envoi de la boutique RL
+# Fonction d'envoi de la boutique RL avec la bonne URL d'image
 async def send_rl_shop(target_channel):
-    async with aiohttp.ClientSession() as session:
-        # Récupération de l'image récapitulative de la boutique via l'API publique
-        url = "https://rocket-league-item-shop.p.rapidapi.com/shop/image"
-        # Source de secours directe pour l'image
-        image_url = "https://rl.insider.gg/src/img/itemshop/current.jpg"
-        
-        embed = discord.Embed(
-            title="🛒 BOUTIQUE ROCKET LEAGUE DU JOUR",
-            description="Voici tous les objets disponibles aujourd'hui dans la boutique !",
-            color=discord.Color.blue()
-        )
-        embed.set_image(url=image_url)
-        embed.set_footer(text="Mise à jour quotidienne automatique")
-        
-        await target_channel.send(embed=embed)
+    image_url = "https://rocketleague.gg/images/item-shop/current.jpg"
+
+    embed = discord.Embed(
+        title="🛒 BOUTIQUE ROCKET LEAGUE DU JOUR",
+        description="Voici tous les objets disponibles aujourd'hui dans la boutique !",
+        color=discord.Color.blue()
+    )
+    embed.set_image(url=image_url)
+    embed.set_footer(text="Mise à jour quotidienne automatique")
+    
+    await target_channel.send(embed=embed)
 
 # ------------------------------------------
 # EVENEMENTS ET COMMANDES
