@@ -5,6 +5,7 @@ import aiohttp
 from flask import Flask
 from threading import Thread
 from datetime import time, timezone
+import xml.etree.ElementTree as ET
 
 # ==========================================
 # 1. SERVEUR FLASK POUR RENDER (KEEP ALIVE)
@@ -13,7 +14,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Le bot Roblox, Twitch & RL Shop est en ligne !"
+    return "Le bot Roblox, Twitch & Rocket League est en ligne !"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -37,7 +38,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 ROBLOX_UNIVERSE_ID = 6880080644
 ROBLOX_CHANNEL_ID = 1344403756811423854
 TWITCH_CHANNEL_ID = 1517233263293497384
-RL_SHOP_CHANNEL_ID = 1515508545418952734  # Salon Boutique RL
+RL_SHOP_CHANNEL_ID = 1515508545418952734     # Salon pour la Boutique RL (!shop)
+RL_UPDATES_CHANNEL_ID = 1534708870352732241 # Salon pour les Versions / MAJ Rocket League
 
 # Clés Twitch API
 TWITCH_CLIENT_ID = os.environ.get("TWITCH_CLIENT_ID")
@@ -65,10 +67,11 @@ STREAMERS = [
     "wavepunk", "achieves"
 ]
 
-last_updated_timestamp = None
+last_roblox_timestamp = None
+last_rl_news_title = None
 currently_live = set()
 
-# Fonction d'envoi de l'alerte boutique RL propre
+# Fonction d'envoi de la boutique RL
 async def send_rl_shop(target_channel):
     embed = discord.Embed(
         title="🛒 BOUTIQUE ROCKET LEAGUE",
@@ -87,15 +90,45 @@ async def send_rl_shop(target_channel):
 async def on_ready():
     print(f"✅ Bot connecté avec succès en tant que : {bot.user}")
     check_roblox_update.start()
+    check_rocket_league_updates.start()
     check_twitch_streams.start()
     daily_rl_shop.start()
 
-# Commande manuelle !shop pour tester
+# Commande manuelle !shop
 @bot.command(name="shop")
 async def manual_shop(ctx):
     await send_rl_shop(ctx.channel)
 
-# Tâche quotidienne automatique (Exécutée tous les jours à 20h00 UTC)
+# Commande manuelle !versionrl (ou !versionrocketleague) pour voir la version actuelle
+@bot.command(name="versionrl", aliases=["versionrocketleague"])
+async def version_rl(ctx):
+    rss_url = "https://www.rocketleague.com/news/rss/"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(rss_url) as response:
+                if response.status == 200:
+                    xml_content = await response.text()
+                    root = ET.fromstring(xml_content)
+                    item = root.find(".//item")
+                    if item is not None:
+                        title = item.find("title").text
+                        link = item.find("link").text
+                        embed = discord.Embed(
+                            title="🎮 DERNIÈRE VERSION / PATCH ROCKET LEAGUE",
+                            description=f"**{title}**",
+                            url=link,
+                            color=discord.Color.orange()
+                        )
+                        embed.add_field(name="Lien officiel", value=link, inline=False)
+                        embed.set_footer(text="Demandé par " + ctx.author.name)
+                        await ctx.send(embed=embed)
+                        return
+        except Exception as e:
+            print(f"Erreur commande versionrl : {e}")
+    
+    await ctx.send("Impossible de récupérer la version actuelle de Rocket League pour le moment.")
+
+# Tâche quotidienne automatique de la boutique (20h00 UTC)
 @tasks.loop(time=time(hour=20, minute=0, tzinfo=timezone.utc))
 async def daily_rl_shop():
     channel = bot.get_channel(RL_SHOP_CHANNEL_ID)
@@ -103,8 +136,74 @@ async def daily_rl_shop():
         await send_rl_shop(channel)
 
 # ------------------------------------------
-# TWITCH & ROBLOX TASKS
+# TÂCHES DE SURVEILLANCE (MAJ, ROBLOX, TWITCH)
 # ------------------------------------------
+@tasks.loop(minutes=5)
+async def check_rocket_league_updates():
+    global last_rl_news_title
+    rss_url = "https://www.rocketleague.com/news/rss/"
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(rss_url) as response:
+                if response.status == 200:
+                    xml_content = await response.text()
+                    root = ET.fromstring(xml_content)
+                    
+                    item = root.find(".//item")
+                    if item is not None:
+                        title = item.find("title").text
+                        link = item.find("link").text
+                        
+                        if last_rl_news_title is None:
+                            last_rl_news_title = title
+                        elif title != last_rl_news_title:
+                            last_rl_news_title = title
+                            channel = bot.get_channel(RL_UPDATES_CHANNEL_ID)
+                            if channel:
+                                embed = discord.Embed(
+                                    title="🎮 NOUVELLE MISE À JOUR / VERSION ROCKET LEAGUE !",
+                                    description=f"**{title}**",
+                                    url=link,
+                                    color=discord.Color.orange()
+                                )
+                                embed.add_field(name="Lien officiel", value=link, inline=False)
+                                embed.set_footer(text="Système de suivi des versions Rocket League")
+                                await channel.send(content="@everyone", embed=embed)
+        except Exception as e:
+            print(f"Erreur vérification maj Rocket League : {e}")
+
+@tasks.loop(minutes=2)
+async def check_roblox_update():
+    global last_roblox_timestamp
+    url = f"https://games.roblox.com/v1/games?universeIds={ROBLOX_UNIVERSE_ID}"
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("data"):
+                        game_info = data["data"][0]
+                        updated_at = game_info.get("updated")
+                        name = game_info.get("name")
+
+                        if last_roblox_timestamp is None:
+                            last_roblox_timestamp = updated_at
+                        elif updated_at != last_roblox_timestamp:
+                            last_roblox_timestamp = updated_at
+                            channel = bot.get_channel(ROBLOX_CHANNEL_ID)
+                            if channel:
+                                embed = discord.Embed(
+                                    title="🚀 NOUVELLE MISE À JOUR ROBLOX !",
+                                    description=f"Le jeu **{name}** vient de recevoir une mise à jour !",
+                                    color=discord.Color.green()
+                                )
+                                embed.add_field(name="Horodatage", value=updated_at, inline=False)
+                                await channel.send(content="@everyone", embed=embed)
+        except Exception as e:
+            print(f"Erreur Roblox : {e}")
+
 async def get_twitch_token():
     global twitch_access_token
     if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
@@ -181,37 +280,6 @@ async def check_twitch_streams():
     for streamer in list(currently_live):
         if streamer not in active_live_this_check:
             currently_live.remove(streamer)
-
-@tasks.loop(minutes=2)
-async def check_roblox_update():
-    global last_updated_timestamp
-    url = f"https://games.roblox.com/v1/games?universeIds={ROBLOX_UNIVERSE_ID}"
-
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("data"):
-                        game_info = data["data"][0]
-                        updated_at = game_info.get("updated")
-                        name = game_info.get("name")
-
-                        if last_updated_timestamp is None:
-                            last_updated_timestamp = updated_at
-                        elif updated_at != last_updated_timestamp:
-                            last_updated_timestamp = updated_at
-                            channel = bot.get_channel(ROBLOX_CHANNEL_ID)
-                            if channel:
-                                embed = discord.Embed(
-                                    title="🚀 NOUVELLE MISE À JOUR ROBLOX !",
-                                    description=f"Le jeu **{name}** vient de recevoir une mise à jour !",
-                                    color=discord.Color.green()
-                                )
-                                embed.add_field(name="Horodatage", value=updated_at, inline=False)
-                                await channel.send(content="@everyone", embed=embed)
-        except Exception as e:
-            print(f"Erreur Roblox : {e}")
 
 # ==========================================
 # 3. DÉMARRAGE DU BOT
