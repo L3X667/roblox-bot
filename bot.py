@@ -39,7 +39,7 @@ ROBLOX_UNIVERSE_ID = 6880080644
 ROBLOX_CHANNEL_ID = 1344403756811423854
 TWITCH_CHANNEL_ID = 1517233263293497384
 RL_SHOP_CHANNEL_ID = 1515508545418952734     # Salon pour la Boutique RL (!shop)
-RL_UPDATES_CHANNEL_ID = 1534708870352732241 # Salon pour les Versions / MAJ Rocket League
+RL_UPDATES_CHANNEL_ID = 1534708870352732241 # Salon pour les Versions / Patch Notes Rocket League
 
 # Clés Twitch API
 TWITCH_CLIENT_ID = os.environ.get("TWITCH_CLIENT_ID")
@@ -68,7 +68,7 @@ STREAMERS = [
 ]
 
 last_roblox_timestamp = None
-last_rl_news_title = None
+last_rl_patch_title = None
 currently_live = set()
 
 # Fonction d'envoi de la boutique RL
@@ -90,7 +90,7 @@ async def send_rl_shop(target_channel):
 async def on_ready():
     print(f"✅ Bot connecté avec succès en tant que : {bot.user}")
     check_roblox_update.start()
-    check_rocket_league_updates.start()
+    check_rocket_league_patches.start()
     check_twitch_streams.start()
     daily_rl_shop.start()
 
@@ -99,34 +99,18 @@ async def on_ready():
 async def manual_shop(ctx):
     await send_rl_shop(ctx.channel)
 
-# Commande manuelle !versionrl (ou !versionrocketleague) pour voir la version actuelle
+# Commande manuelle !versionrl pointant vers les patch notes officiels
 @bot.command(name="versionrl", aliases=["versionrocketleague"])
 async def version_rl(ctx):
-    rss_url = "https://www.rocketleague.com/news/rss/"
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(rss_url) as response:
-                if response.status == 200:
-                    xml_content = await response.text()
-                    root = ET.fromstring(xml_content)
-                    item = root.find(".//item")
-                    if item is not None:
-                        title = item.find("title").text
-                        link = item.find("link").text
-                        embed = discord.Embed(
-                            title="🎮 DERNIÈRE VERSION / PATCH ROCKET LEAGUE",
-                            description=f"**{title}**",
-                            url=link,
-                            color=discord.Color.orange()
-                        )
-                        embed.add_field(name="Lien officiel", value=link, inline=False)
-                        embed.set_footer(text="Demandé par " + ctx.author.name)
-                        await ctx.send(embed=embed)
-                        return
-        except Exception as e:
-            print(f"Erreur commande versionrl : {e}")
-    
-    await ctx.send("Impossible de récupérer la version actuelle de Rocket League pour le moment.")
+    patch_url = "https://www.rocketleague.com/news/tag/patch-notes"
+    embed = discord.Embed(
+        title="🎮 PATCH NOTES & VERSIONS ROCKET LEAGUE",
+        description=f"Consulte les dernières notes de mise à jour officielles :\n\n👉 **[Clique ici pour voir les Patch Notes]({patch_url})**",
+        color=discord.Color.orange()
+    )
+    embed.add_field(name="📌 Suivi des versions", value="Lien direct vers les patchs officiels", inline=False)
+    embed.set_footer(text=f"Demandé par {ctx.author.name} - L3X BOT")
+    await ctx.send(embed=embed)
 
 # Tâche quotidienne automatique de la boutique (20h00 UTC)
 @tasks.loop(time=time(hour=20, minute=0, tzinfo=timezone.utc))
@@ -136,11 +120,11 @@ async def daily_rl_shop():
         await send_rl_shop(channel)
 
 # ------------------------------------------
-# TÂCHES DE SURVEILLANCE (MAJ, ROBLOX, TWITCH)
+# TÂCHES DE SURVEILLANCE (PATCHES, ROBLOX, TWITCH)
 # ------------------------------------------
 @tasks.loop(minutes=5)
-async def check_rocket_league_updates():
-    global last_rl_news_title
+async def check_rocket_league_patches():
+    global last_rl_patch_title
     rss_url = "https://www.rocketleague.com/news/rss/"
 
     async with aiohttp.ClientSession() as session:
@@ -150,28 +134,31 @@ async def check_rocket_league_updates():
                     xml_content = await response.text()
                     root = ET.fromstring(xml_content)
                     
-                    item = root.find(".//item")
-                    if item is not None:
+                    # Parcourir les articles pour trouver un patch note récent
+                    for item in root.findall(".//item"):
                         title = item.find("title").text
                         link = item.find("link").text
                         
-                        if last_rl_news_title is None:
-                            last_rl_news_title = title
-                        elif title != last_rl_news_title:
-                            last_rl_news_title = title
-                            channel = bot.get_channel(RL_UPDATES_CHANNEL_ID)
-                            if channel:
-                                embed = discord.Embed(
-                                    title="🎮 NOUVELLE MISE À JOUR / VERSION ROCKET LEAGUE !",
-                                    description=f"**{title}**",
-                                    url=link,
-                                    color=discord.Color.orange()
-                                )
-                                embed.add_field(name="Lien officiel", value=link, inline=False)
-                                embed.set_footer(text="Système de suivi des versions Rocket League")
-                                await channel.send(content="@everyone", embed=embed)
+                        # Vérifie si l'article concerne un patch / mise à jour de version
+                        if "patch" in title.lower() or "v2." in title.lower() or "update" in title.lower():
+                            if last_rl_patch_title is None:
+                                last_rl_patch_title = title
+                            elif title != last_rl_patch_title:
+                                last_rl_patch_title = title
+                                channel = bot.get_channel(RL_UPDATES_CHANNEL_ID)
+                                if channel:
+                                    embed = discord.Embed(
+                                        title="🚀 NOUVELLE VERSION / PATCH NOTE ROCKET LEAGUE !",
+                                        description=f"**{title}**",
+                                        url=link,
+                                        color=discord.Color.orange()
+                                    )
+                                    embed.add_field(name="Lien officiel", value=link, inline=False)
+                                    embed.set_footer(text="Alerte de version automatique - L3X BOT")
+                                    await channel.send(content="@everyone", embed=embed)
+                            break
         except Exception as e:
-            print(f"Erreur vérification maj Rocket League : {e}")
+            print(f"Erreur vérification patch Rocket League : {e}")
 
 @tasks.loop(minutes=2)
 async def check_roblox_update():
