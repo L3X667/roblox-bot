@@ -1,97 +1,93 @@
+import os
 import discord
 from discord.ext import commands, tasks
 import aiohttp
+from flask import Flask
+from threading import Thread
 
-# --- CONFIGURATION ---
-TOKEN = "MTUxNzIyNjk3ODk0MjUyMTQ3NQ.GoHajx.RvljJIXFEYUGXRQvg10zGTQC3dZcGRXEA3kz-Y"  # Remplace par le token de ton bot
-CHANNEL_ID = 1534679583947886594  # Remplace par l'ID du salon Discord où envoyer l'alerte
+# ==========================================
+# 1. SERVEUR FLASK POUR RENDER (KEEP ALIVE)
+# ==========================================
+app = Flask('')
 
+@app.route('/')
+def home():
+    return "Le bot Roblox est en ligne et fonctionnel !"
+
+def run():
+    # Render attribue un port dynamique via os.environ.get("PORT")
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+# Lancement du serveur Web en arrière-plan
+keep_alive()
+
+# ==========================================
+# 2. CONFIGURATION DU BOT DISCORD
+# ==========================================
 intents = discord.Intents.default()
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Variable pour stocker la dernière version connue
-last_known_version = None
+# ID de l'expérience Roblox et ID du salon Discord
+ROBLOX_UNIVERSE_ID = 6880080644  # Modifie si besoin avec ton Universe ID
+DISCORD_CHANNEL_ID = 1344403756811423854  # Modifie si besoin avec l'ID de ton salon
 
-# API officielle de Roblox pour récupérer la version actuelle de WindowsPlayer
-ROBLOX_API_URL = "https://clientsettings.roblox.com/v2/client-version/WindowsPlayer"
-
-
-async def fetch_roblox_version():
-    """Récupère la version actuelle de Roblox depuis l'API officielle."""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(ROBLOX_API_URL) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    # Exemple de format retourné : "version-ff6341faef444107" ou numéro de version "0.732.0.7321040"
-                    version_num = data.get("version", "Inconnue")
-                    client_version = data.get("clientVersionUpload", version_num)
-                    return client_version
-    except Exception as e:
-        print(f"Erreur lors de la vérification de la version Roblox : {e}")
-    return None
-
+last_updated_timestamp = None
 
 @bot.event
 async def on_ready():
-    print(f"✅ Bot connecté en tant que {bot.user}")
-    # Démarre la boucle de vérification automatique toutes les 15 minutes
-    if not check_roblox_update.is_running():
-        check_roblox_update.start()
+    print(f"✅ Bot connecté avec succès en tant que : {bot.user}")
+    check_roblox_update.start()
 
-
-@tasks.loop(minutes=15)
+@tasks.loop(minutes=2)
 async def check_roblox_update():
-    global last_known_version
+    global last_updated_timestamp
+    url = f"https://games.roblox.com/v1/games?universeIds={ROBLOX_UNIVERSE_ID}"
 
-    current_version = await fetch_roblox_version()
-    if not current_version:
-        return
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("data"):
+                        game_info = data["data"][0]
+                        updated_at = game_info.get("updated")
+                        name = game_info.get("name")
 
-    # Première exécution : enregistre la version de départ sans spammer
-    if last_known_version is None:
-        last_known_version = current_version
-        print(f"📌 Version Roblox actuelle enregistrée : {last_known_version}")
-        return
+                        if last_updated_timestamp is None:
+                            last_updated_timestamp = updated_at
+                            print(f"Initialisation : Dernière MàJ enregistrée = {updated_at}")
+                        elif updated_at != last_updated_timestamp:
+                            last_updated_timestamp = updated_at
+                            
+                            channel = bot.get_channel(DISCORD_CHANNEL_ID)
+                            if channel:
+                                embed = discord.Embed(
+                                    title="🚀 NOUVELLE MISE À JOUR ROBLOX !",
+                                    description=f"Le jeu **{name}** vient de recevoir une mise à jour !",
+                                    color=discord.Color.green()
+                                )
+                                embed.add_field(name="Horodatage", value=updated_at, inline=False)
+                                embed.set_footer(text="Détecteur de mise à jour Roblox")
+                                
+                                await channel.send(content="@everyone", embed=embed)
+                                print("Notification envoyée sur Discord !")
+        except Exception as e:
+            print(f"Erreur lors de la vérification Roblox : {e}")
 
-    # Si la version a changé -> Nouvelle mise à jour détectée !
-    if current_version != last_known_version:
-        last_known_version = current_version
-        channel = bot.get_channel(CHANNEL_ID)
+# ==========================================
+# 3. DEMARRAGE SECURISE DU BOT
+# ==========================================
+# Récupère le token depuis la variable d'environnement configurée sur Render
+TOKEN = os.environ.get("DISCORD_TOKEN")
 
-        if channel:
-            embed = discord.Embed(
-                title="🚨 Nouvelle mise à jour Roblox !",
-                description="Roblox vient de déployer une nouvelle version du client.",
-                color=discord.Color.red(),
-            )
-            embed.add_field(
-                name="📦 Version", value=f"`{current_version}`", inline=False
-            )
-            embed.set_thumbnail(
-                url="https://upload.wikimedia.org/wikipedia/commons/3/3a/Roblox_player_2022_icon.svg"
-            )
-            embed.set_footer(text="Système de notification automatique Roblox")
-
-            await channel.send(embed=embed)
-            print(f"📢 Notification d'update envoyée : {current_version}")
-
-
-@bot.command()
-async def robloxversion(ctx):
-    """Commande manuelle pour afficher la version actuelle."""
-    version = await fetch_roblox_version()
-    if version:
-        embed = discord.Embed(
-            title="🎮 Version actuelle de Roblox",
-            description=f"La version officielle actuelle est : `{version}`",
-            color=discord.Color.blue(),
-        )
-        await ctx.send(embed=embed)
-    else:
-        await ctx.send("❌ Impossible de récupérer la version de Roblox pour le moment.")
-
-
-bot.run(TOKEN)
+if TOKEN:
+    bot.run(TOKEN)
+else:
+    print("❌ ERREUR : La variable d'environnement 'DISCORD_TOKEN' n'est pas définie sur Render !")
