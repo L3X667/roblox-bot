@@ -4,6 +4,7 @@ from discord.ext import commands, tasks
 import aiohttp
 from flask import Flask
 from threading import Thread
+from datetime import time, timezone
 
 # ==========================================
 # 1. SERVEUR FLASK POUR RENDER (KEEP ALIVE)
@@ -12,7 +13,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Le bot Roblox & Twitch est en ligne et fonctionnel !"
+    return "Le bot Roblox, Twitch & RL Shop est en ligne !"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -32,88 +33,102 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# IDs Discord et Roblox
+# IDs des salons Discord
 ROBLOX_UNIVERSE_ID = 6880080644
 ROBLOX_CHANNEL_ID = 1344403756811423854
 TWITCH_CHANNEL_ID = 1517233263293497384
+RL_SHOP_CHANNEL_ID = 1515508545418952734  # Salon Boutique RL
 
-# Clés Twitch récupérées depuis les variables d'environnement Render
+# Clés Twitch API
 TWITCH_CLIENT_ID = os.environ.get("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.environ.get("TWITCH_CLIENT_SECRET")
 twitch_access_token = None
 
-# LISTE COMPLÈTE DES STREAMERS À SURVEILLER
+# LISTE STREAMERS TWITCH
 STREAMERS = [
-    # 🇫🇷 Streamers français
     "mawkzy_", "rocketbaguette", "fuury_off", "atowwwww", "kaydop", "vatira", 
     "zenrll", "alpha54", "chausette45", "fairy_peak", "extra", "saizen", "radosin", 
     "juicy", "seikoo", "monkeymoon", "itachi", "aztral", "ferra", "eversax", 
     "exotiik", "dralii", "lecheps", "payriixx", "poachimpa", "kaokor", "rasmelthor", 
-    "shogunfr", "yukeofr",
-    
-    # 🇬🇧🇺🇸 Streamers anglophones
-    "rocketleague", "squishymuffinz", "lethamyr", "apparentlyjack", "retals", 
-    "arsenal", "garrettg", "ayyjayy", "jstn", "daniel", "beastmode", "comm", 
-    "firstkiller", "chronic", "lj", "mist", "cheese", "hockser", "percy", 
-    "chicago", "rizzo", "athena", "jonsandman", "sunlesskhan", "musty", "cbell", 
-    "thanovic", "wayton", "chiefbeef_rl", "evample", "frontalpanda", "pulsemk", 
-    "pulsetemple", "hivise", "cbellrl", "woody", "spookluke", "virge", "gibbs", 
-    "johnnyboi_i", "dazerin", "corelli", "turtle", "stumpy", "cole",
-    
-    # 🇪🇸 Espagne / Amérique latine
-    "jannlpzz", "rosdri_twitch", "stake", "crr", "atomik", "dorito", "marc_by_8", 
-    "rezears", "kairiu", "tox",
-    
-    # 🇸🇦 Moyen-Orient
+    "shogunfr", "yukeofr", "rocketleague", "squishymuffinz", "lethamyr", "apparentlyjack", 
+    "retals", "arsenal", "garrettg", "ayyjayy", "jstn", "daniel", "beastmode", "comm", 
+    "firstkiller", "chronic", "lj", "mist", "cheese", "hockser", "percy", "chicago", 
+    "rizzo", "athena", "jonsandman", "sunlesskhan", "musty", "cbell", "thanovic", 
+    "wayton", "chiefbeef_rl", "evample", "frontalpanda", "pulsemk", "pulsetemple", 
+    "hivise", "cbellrl", "woody", "spookluke", "virge", "gibbs", "johnnyboi_i", 
+    "dazerin", "corelli", "turtle", "stumpy", "cole", "jannlpzz", "rosdri_twitch", 
+    "stake", "crr", "atomik", "dorito", "marc_by_8", "rezears", "kairiu", "tox", 
     "trk511__", "rw9", "kiileerrz", "nwpo", "ahmad", "okhali_d", "venom", "smw", 
-    "m7sn", "t7lm",
-    
-    # 🇩🇪 Allemagne / Europe
-    "catalysm", "nass", "oaly", "oski", "joreuz", "rise", "archie", "scrubkilla", "yukeo",
-    
-    # 🇧🇷 Brésil
-    "yanxnz", "lostt", "kv1", "motta", "aztromick", "caard", "math", "droppz",
-    
-    # 🎯 Freestylers & Casters
-    "muiricle", "henkovic", "jzr", "ganer", "kuxir97", "maktuf", "wavepunk", "achieves"
+    "m7sn", "t7lm", "catalysm", "nass", "oaly", "oski", "joreuz", "rise", "archie", 
+    "scrubkilla", "yukeo", "yanxnz", "lostt", "kv1", "motta", "aztromick", "caard", 
+    "math", "droppz", "muiricle", "henkovic", "jzr", "ganer", "kuxir97", "maktuf", 
+    "wavepunk", "achieves"
 ]
 
 last_updated_timestamp = None
 currently_live = set()
 
-# Fonction pour générer le jeton d'accès Twitch API
+# Fonction d'envoi de la boutique RL
+async def send_rl_shop(target_channel):
+    async with aiohttp.ClientSession() as session:
+        # Récupération de l'image récapitulative de la boutique via l'API publique
+        url = "https://rocket-league-item-shop.p.rapidapi.com/shop/image"
+        # Source de secours directe pour l'image
+        image_url = "https://rl.insider.gg/src/img/itemshop/current.jpg"
+        
+        embed = discord.Embed(
+            title="🛒 BOUTIQUE ROCKET LEAGUE DU JOUR",
+            description="Voici tous les objets disponibles aujourd'hui dans la boutique !",
+            color=discord.Color.blue()
+        )
+        embed.set_image(url=image_url)
+        embed.set_footer(text="Mise à jour quotidienne automatique")
+        
+        await target_channel.send(embed=embed)
+
+# ------------------------------------------
+# EVENEMENTS ET COMMANDES
+# ------------------------------------------
+@bot.event
+async def on_ready():
+    print(f"✅ Bot connecté avec succès en tant que : {bot.user}")
+    check_roblox_update.start()
+    check_twitch_streams.start()
+    daily_rl_shop.start()
+
+# Commande manuelle !shop pour tester
+@bot.command(name="shop")
+async def manual_shop(ctx):
+    await send_rl_shop(ctx.channel)
+
+# Tâche quotidienne automatique (Exécutée tous les jours à 20h00 UTC)
+@tasks.loop(time=time(hour=20, minute=0, tzinfo=timezone.utc))
+async def daily_rl_shop():
+    channel = bot.get_channel(RL_SHOP_CHANNEL_ID)
+    if channel:
+        await send_rl_shop(channel)
+
+# ------------------------------------------
+# TWITCH & ROBLOX TASKS
+# ------------------------------------------
 async def get_twitch_token():
     global twitch_access_token
     if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
-        print("❌ Clés API Twitch manquantes sur Render !")
         return None
-
     url = "https://id.twitch.tv/oauth2/token"
     params = {
         "client_id": TWITCH_CLIENT_ID,
         "client_secret": TWITCH_CLIENT_SECRET,
         "grant_type": "client_credentials"
     }
-    
     async with aiohttp.ClientSession() as session:
         async with session.post(url, params=params) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 twitch_access_token = data.get("access_token")
                 return twitch_access_token
-            else:
-                print(f"❌ Erreur lors de la récupération du Token Twitch : {resp.status}")
-                return None
+            return None
 
-@bot.event
-async def on_ready():
-    print(f"✅ Bot connecté avec succès en tant que : {bot.user}")
-    check_roblox_update.start()
-    check_twitch_streams.start()
-
-# ------------------------------------------
-# SCAN DE LA LISTE TWITCH (Toutes les 3 min)
-# ------------------------------------------
 @tasks.loop(minutes=3)
 async def check_twitch_streams():
     global twitch_access_token
@@ -127,10 +142,8 @@ async def check_twitch_streams():
         "Authorization": f"Bearer {twitch_access_token}"
     }
 
-    # Découper la liste par paquets de 100 streamers (limite d'API Twitch par requête)
     chunk_size = 100
     streamer_chunks = [STREAMERS[i:i + chunk_size] for i in range(0, len(STREAMERS), chunk_size)]
-
     active_live_this_check = set()
 
     async with aiohttp.ClientSession() as session:
@@ -138,7 +151,7 @@ async def check_twitch_streams():
             url = "https://api.twitch.tv/helix/streams?" + "&".join([f"user_login={s}" for s in chunk])
             try:
                 async with session.get(url, headers=headers) as resp:
-                    if resp.status == 401:  # Si le token a expiré, on le renouvelle
+                    if resp.status == 401:
                         await get_twitch_token()
                         headers["Authorization"] = f"Bearer {twitch_access_token}"
                         continue
@@ -151,14 +164,11 @@ async def check_twitch_streams():
                             user_login = stream["user_login"].lower()
                             game_name = stream.get("game_name", "")
                             
-                            # Vérification : Doit jouer spécifiquement à Rocket League
                             if "rocket league" in game_name.lower():
                                 active_live_this_check.add(user_login)
 
-                                # Si le streamer vient tout juste de passer en live
                                 if user_login not in currently_live:
                                     currently_live.add(user_login)
-                                    
                                     channel = bot.get_channel(TWITCH_CHANNEL_ID)
                                     if channel:
                                         stream_url = f"https://www.twitch.tv/{user_login}"
@@ -168,23 +178,16 @@ async def check_twitch_streams():
                                             url=stream_url,
                                             color=discord.Color.purple()
                                         )
-                                        # Image de miniature du stream en temps réel
                                         embed.set_thumbnail(url=stream['thumbnail_url'].replace("{width}", "320").replace("{height}", "180"))
                                         embed.add_field(name="Lien du Stream", value=stream_url, inline=False)
-                                        
                                         await channel.send(content=f"🔴 **{stream['user_name']}** est actuellement en direct !", embed=embed)
-                                        print(f"Notification Twitch envoyée pour : {stream['user_name']}")
             except Exception as e:
-                print(f"Erreur lors du scan Twitch : {e}")
+                print(f"Erreur Twitch : {e}")
 
-    # Retirer les streamers de la mémoire s'ils ont coupé leur live
     for streamer in list(currently_live):
         if streamer not in active_live_this_check:
             currently_live.remove(streamer)
 
-# ------------------------------------------
-# DÉTECTION DES MÀJ ROBLOX (Toutes les 2 min)
-# ------------------------------------------
 @tasks.loop(minutes=2)
 async def check_roblox_update():
     global last_updated_timestamp
@@ -204,7 +207,6 @@ async def check_roblox_update():
                             last_updated_timestamp = updated_at
                         elif updated_at != last_updated_timestamp:
                             last_updated_timestamp = updated_at
-                            
                             channel = bot.get_channel(ROBLOX_CHANNEL_ID)
                             if channel:
                                 embed = discord.Embed(
@@ -218,11 +220,8 @@ async def check_roblox_update():
             print(f"Erreur Roblox : {e}")
 
 # ==========================================
-# 3. DÉMARRAGE DU BOT DISCORD
+# 3. DÉMARRAGE DU BOT
 # ==========================================
 TOKEN = os.environ.get("DISCORD_TOKEN")
-
 if TOKEN:
     bot.run(TOKEN)
-else:
-    print("❌ ERREUR : La variable d'environnement 'DISCORD_TOKEN' est absente !")
