@@ -1,9 +1,5 @@
 discord.py
 aiohttp
 flask
-Pillow
-discord.py
 cloudscraper
-bs4
-rut-chile
 requests
