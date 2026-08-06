@@ -15,7 +15,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Le bot Roblox, Twitch & Rocket League est en ligne !"
+    return "Le bot Roblox, Twitch, Rocket League & Fortnite est en ligne !"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -41,6 +41,7 @@ ROBLOX_CHANNEL_ID = 1344403756811423854
 TWITCH_CHANNEL_ID = 1517233263293497384
 RL_SHOP_CHANNEL_ID = 1515508545418952734     # Salon pour la Boutique RL (!shop)
 RL_UPDATES_CHANNEL_ID = 1534708870352732241 # Salon pour les Versions / Patch Notes Rocket League
+FN_UPDATES_CHANNEL_ID = 1534724078584336384 # Salon pour les Actualités / Versions Fortnite
 
 # Clés Twitch API
 TWITCH_CLIENT_ID = os.environ.get("TWITCH_CLIENT_ID")
@@ -70,7 +71,10 @@ STREAMERS = [
 
 last_roblox_timestamp = None
 last_rl_patch_title = None
-current_rl_version = "v2.72"  # Version par défaut initiale
+current_rl_version = "v2.72"
+
+last_fn_news_title = None
+current_fn_version = "v39.00"
 currently_live = set()
 
 # Fonction d'envoi de la boutique RL
@@ -93,6 +97,7 @@ async def on_ready():
     print(f"✅ Bot connecté avec succès en tant que : {bot.user}")
     check_roblox_update.start()
     check_rocket_league_patches.start()
+    check_fortnite_updates.start()
     check_twitch_streams.start()
     daily_rl_shop.start()
 
@@ -101,7 +106,7 @@ async def on_ready():
 async def manual_shop(ctx):
     await send_rl_shop(ctx.channel)
 
-# Commande manuelle !versionrl affichant la version dynamique
+# Commande manuelle !versionrl
 @bot.command(name="versionrl", aliases=["versionrocketleague"])
 async def version_rl(ctx):
     patch_url = "https://www.rocketleague.com/news/tag/patch-notes"
@@ -114,6 +119,19 @@ async def version_rl(ctx):
     embed.set_footer(text=f"Demandé par {ctx.author.name} - L3X BOT")
     await ctx.send(embed=embed)
 
+# Commande manuelle !versionfn
+@bot.command(name="versionfn", aliases=["versionfortnite"])
+async def version_fn(ctx):
+    fn_url = "https://www.fortnite.com/news"
+    embed = discord.Embed(
+        title="🌀 ACTUALITÉS & VERSIONS FORTNITE",
+        description=f"Version / mise à jour récente du jeu : **{current_fn_version}**\n\nConsulte les dernières annonces et notes de patch officielles :\n\n👉 **[Clique ici pour voir les actualités Fortnite]({fn_url})**",
+        color=discord.Color.purple()
+    )
+    embed.add_field(name="📌 Suivi des versions", value="Lien direct vers le site officiel Fortnite", inline=False)
+    embed.set_footer(text=f"Demandé par {ctx.author.name} - L3X BOT")
+    await ctx.send(embed=embed)
+
 # Tâche quotidienne automatique de la boutique (20h00 UTC)
 @tasks.loop(time=time(hour=20, minute=0, tzinfo=timezone.utc))
 async def daily_rl_shop():
@@ -122,7 +140,7 @@ async def daily_rl_shop():
         await send_rl_shop(channel)
 
 # ------------------------------------------
-# TÂCHES DE SURVEILLANCE (PATCHES, ROBLOX, TWITCH)
+# TÂCHES DE SURVEILLANCE
 # ------------------------------------------
 @tasks.loop(minutes=5)
 async def check_rocket_league_patches():
@@ -141,7 +159,6 @@ async def check_rocket_league_patches():
                         link = item.find("link").text
                         
                         if "patch" in title.lower() or "v2." in title.lower() or "update" in title.lower():
-                            # Extraire automatiquement le numéro de version (ex: v2.73) s'il est présent dans le titre
                             match = re.search(r'v2\.\d+', title, re.IGNORECASE)
                             if match:
                                 current_rl_version = match.group(0)
@@ -164,6 +181,45 @@ async def check_rocket_league_patches():
                             break
         except Exception as e:
             print(f"Erreur vérification patch Rocket League : {e}")
+
+@tasks.loop(minutes=10)
+async def check_fortnite_updates():
+    global last_fn_news_title, current_fn_version
+    fn_api_url = "https://fortnite-api.com/v2/news/br"
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(fn_api_url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("status") == 200:
+                        motd = data["data"]["motds"][0]
+                        title = motd.get("title")
+                        body = motd.get("body", "")
+                        image = motd.get("image")
+
+                        match = re.search(r'v\d+\.\d+', title + " " + body, re.IGNORECASE)
+                        if match:
+                            current_fn_version = match.group(0)
+
+                        if last_fn_news_title is None:
+                            last_fn_news_title = title
+                        elif title != last_fn_news_title:
+                            last_fn_news_title = title
+                            channel = bot.get_channel(FN_UPDATES_CHANNEL_ID)
+                            if channel:
+                                embed = discord.Embed(
+                                    title=f"🌀 NOUVELLE ACTUALITÉ / MISE À JOUR FORTNITE !",
+                                    description=f"**{title}**\n\n{body}",
+                                    color=discord.Color.purple()
+                                )
+                                if image:
+                                    embed.set_image(url=image)
+                                embed.add_field(name="Version détectée", value=current_fn_version, inline=False)
+                                embed.set_footer(text="Alerte Fortnite automatique - L3X BOT")
+                                await channel.send(content="@everyone", embed=embed)
+        except Exception as e:
+            print(f"Erreur vérification actualités Fortnite : {e}")
 
 @tasks.loop(minutes=2)
 async def check_roblox_update():
@@ -261,7 +317,7 @@ async def check_twitch_streams():
                                             title=f"🔴 {stream['user_name']} est en LIVE sur Rocket League !",
                                             description=f"**Titre :** {stream['title']}\n**Spectateurs :** 👁️ {stream['viewer_count']}",
                                             url=stream_url,
-                                    color=discord.Color.purple()
+                                            color=discord.Color.purple()
                                         )
                                         embed.set_thumbnail(url=stream['thumbnail_url'].replace("{width}", "320").replace("{height}", "180"))
                                         embed.add_field(name="Lien du Stream", value=stream_url, inline=False)
