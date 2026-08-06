@@ -105,8 +105,12 @@ RL_SHOP_CHANNEL_ID    = int(os.getenv("RL_SHOP_CHANNEL_ID",    15155085454189527
 RL_UPDATES_CHANNEL_ID = int(os.getenv("RL_UPDATES_CHANNEL_ID", 1534708870352732241))
 FN_UPDATES_CHANNEL_ID = int(os.getenv("FN_UPDATES_CHANNEL_ID", 1534724078584336384))
 
-# ID de l'unique salon autorisé pour utiliser la commande /key
+# IDs de restrictions pour les commandes
 KEY_CHANNEL_ID        = 1534835833922785431
+LINKROBLOX_CHANNEL_ID = 1518014650829242388
+
+# ID du rôle Roblox à attribuer via /linkroblox
+ROBLOX_ROLE_ID        = 1518016527499132948
 
 TWITCH_CLIENT_ID     = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
@@ -227,7 +231,6 @@ async def send_rl_shop(channel: discord.TextChannel) -> None:
 # ── /key ──────────────────────────────────────────────────────────
 @bot.tree.command(name="key", description="Génère une clé d'accès unique valable 24h.")
 async def slash_key(interaction: discord.Interaction):
-    # Vérification stricte du salon unique autorisé
     if interaction.channel_id != KEY_CHANNEL_ID:
         await interaction.response.send_message(
             f"❌ Tu ne peux utiliser cette commande que dans le salon <#{KEY_CHANNEL_ID}> !",
@@ -273,6 +276,69 @@ async def slash_key(interaction: discord.Interaction):
     embed.add_field(name="⚠️ Important", value="Clé personnelle — ne pas partager.", inline=False)
     embed.set_footer(text="L3X BOT — Système de clés")
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ── /linkroblox (Abonnement + Rôle) ───────────────────────────────
+class RobloxVerifyView(discord.ui.View):
+    def __init__(self, roblox_url: str):
+        super().__init__(timeout=300)
+        self.add_item(discord.ui.Button(
+            label="🔗 S'abonner à mon profil Roblox",
+            style=discord.ButtonStyle.link,
+            url=roblox_url
+        ))
+
+    @discord.ui.button(label="✅ Je me suis abonné, je veux mon rôle", style=discord.ButtonStyle.green, custom_id="verify_roblox_btn")
+    async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        if not guild:
+            return
+
+        role = guild.get_role(ROBLOX_ROLE_ID)
+        if not role:
+            await interaction.response.send_message("❌ Erreur : Rôle introuvable sur le serveur.", ephemeral=True)
+            return
+
+        if role in interaction.user.roles:
+            await interaction.response.send_message("⚠️ Tu possèdes déjà ce rôle !", ephemeral=True)
+            return
+
+        try:
+            await interaction.user.add_roles(role)
+            await interaction.response.send_message(
+                f"✅ Merci pour l'abonnement ! Le rôle **{role.name}** t'a été attribué avec succès.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Une erreur est survenue : {e}", ephemeral=True)
+
+@bot.tree.command(name="linkroblox", description="Abonne-toi à mon profil Roblox pour récupérer ton rôle.")
+async def slash_linkroblox(interaction: discord.Interaction):
+    # VÉRIFICATION DU SALON AUTORISÉ
+    if interaction.channel_id != LINKROBLOX_CHANNEL_ID:
+        await interaction.response.send_message(
+            f"❌ Tu ne peux utiliser cette commande que dans le salon <#{LINKROBLOX_CHANNEL_ID}> !",
+            ephemeral=True
+        )
+        return
+
+    roblox_profile_url = "https://www.roblox.com/fr/fr/users/1353605326/profile"
+    
+    embed = discord.Embed(
+        title="🤖 Vérification Roblox & Abonnement",
+        description=(
+            "Pour obtenir ton rôle exclusif sur le serveur, c'est très simple :\n\n"
+            "1. Clique sur le bouton ci-dessous pour t'abonner à mon profil Roblox.\n"
+            "2. Reviens ici et clique sur **✅ Je me suis abonné, je veux mon rôle** !"
+        ),
+        color=discord.Color.blue(),
+    )
+    embed.set_footer(text="L3X BOT — Vérification")
+    
+    await interaction.response.send_message(
+        embed=embed, 
+        view=RobloxVerifyView(roblox_profile_url), 
+        ephemeral=True
+    )
 
 # ── /shoprl ───────────────────────────────────────────────────────
 @bot.tree.command(name="shoprl", description="[ADMIN] Force l'affichage de la boutique Rocket League.")
