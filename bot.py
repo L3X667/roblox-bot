@@ -1,5 +1,7 @@
-import os, json, asyncio, re, string, secrets, urllib.parse, tempfile, threading, time as time_module
+import os, json, asyncio, re, string, secrets, urllib.parse, time as time_module
 import xml.etree.ElementTree as ET
+import tempfile
+import threading
 from threading import Thread
 from datetime import datetime, timedelta, timezone, time
 
@@ -10,10 +12,10 @@ from discord.ext import commands, tasks
 from flask import Flask, request, jsonify
 
 # ══════════════════════════════════════════════════════════════════
-# 0. PERSISTANCE CLÉ & VERROUILLAGE THREAD-SAFE
+# 0. PERSISTANCE CLÉ
 # ══════════════════════════════════════════════════════════════════
 KEY_STORE_FILE = "key_store.json"
-_store_lock = threading.Lock()
+_store_lock    = threading.Lock()          # FIX #1 — verrou global multi-thread
 
 def _load_store() -> dict:
     try:
@@ -26,6 +28,7 @@ def _load_store() -> dict:
         return {}
 
 def _save_store(store: dict) -> None:
+    """Écriture atomique via fichier temporaire + os.replace (FIX #2)."""
     serializable = {
         uid: {
             "key":      d["key"],
@@ -47,8 +50,8 @@ def generate_key(length: int = 20) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 def cleanup_expired_keys() -> None:
-    with _store_lock:
-        now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    with _store_lock:                      # FIX #6 — verrou sur cleanup
         expired = [uid for uid, d in key_store.items() if d["expires"] < now]
         for uid in expired:
             del key_store[uid]
@@ -68,20 +71,20 @@ def home():
 def validate_key():
     key = request.args.get("key", "").strip()
     print(f"[DEBUG FLASK] Requête de validation reçue pour la clé : '{key}'")
-    
+
     if not key:
         return jsonify({"valid": False, "reason": "Aucune clé fournie"}), 400
 
     now = datetime.now(timezone.utc)
-    with _store_lock:
+    with _store_lock:                      # FIX #1 — lecture thread-safe
         for user_id, data in key_store.items():
             if data["key"] == key:
                 if data["expires"] > now:
                     remaining = data["expires"] - now
-                    print(f"[DEBUG FLASK] Succès ! Clé valide pour l'utilisateur {data['username']}")
+                    print(f"[DEBUG FLASK] Succès ! Clé valide pour {data['username']}")
                     return jsonify({
-                        "valid":             True,
-                        "user":              data["username"],
+                        "valid":              True,
+                        "user":               data["username"],
                         "expires_in_seconds": int(remaining.total_seconds()),
                     })
                 print(f"[DEBUG FLASK] Échec : Clé expirée pour {data['username']}")
@@ -93,8 +96,8 @@ def validate_key():
 @flask_app.route("/health")
 def health():
     with _store_lock:
-        keys_count = len(key_store)
-    return jsonify({"status": "ok", "keys_active": keys_count})
+        count = len(key_store)
+    return jsonify({"status": "ok", "keys_active": count})
 
 def _run_flask() -> None:
     port = int(os.environ.get("PORT", 8080))
@@ -107,16 +110,17 @@ Thread(target=_run_flask, daemon=True).start()
 # ══════════════════════════════════════════════════════════════════
 DISCORD_INVITE = "https://discord.gg/764AW7aSKS"
 
-ROBLOX_CHANNEL_ID      = int(os.getenv("ROBLOX_CHANNEL_ID",      1534679583947886594))
-TWITCH_CHANNEL_ID      = int(os.getenv("TWITCH_CHANNEL_ID",      1517233263293497384))
-RL_SHOP_CHANNEL_ID    = int(os.getenv("RL_SHOP_CHANNEL_ID",    1515508545418952734))
-RL_UPDATES_CHANNEL_ID = int(os.getenv("RL_UPDATES_CHANNEL_ID", 1534708870352732241))
-FN_UPDATES_CHANNEL_ID = int(os.getenv("FN_UPDATES_CHANNEL_ID", 1534724078584336384))
+ROBLOX_CHANNEL_ID        = int(os.getenv("ROBLOX_CHANNEL_ID",     1534679583947886594))
+TWITCH_CHANNEL_ID        = int(os.getenv("TWITCH_CHANNEL_ID",     1517233263293497384))
+RL_SHOP_CHANNEL_ID       = int(os.getenv("RL_SHOP_CHANNEL_ID",    1515508545418952734))
+RL_UPDATES_CHANNEL_ID    = int(os.getenv("RL_UPDATES_CHANNEL_ID", 1534708870352732241))
+FN_UPDATES_CHANNEL_ID    = int(os.getenv("FN_UPDATES_CHANNEL_ID", 1534724078584336384))
 
-KEY_CHANNEL_ID        = 1534835833922785431
+KEY_CHANNEL_ID           = 1534835833922785431
 ROBLOX_VERIFY_CHANNEL_ID = 1518014650829242388
-ROBLOX_ROLE_ID        = 1518016527499132948
-ROBLOX_PROFILE_URL    = "https://www.roblox.com/users/1353605326/profile"
+ROBLOX_ROLE_ID           = 1518016527499132948
+ROBLOX_PROFILE_URL       = "https://www.roblox.com/users/1353605326/profile"
+ROBLOX_OWNER_ID          = 1353605326          # ton user ID Roblox numérique
 
 TWITCH_CLIENT_ID     = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
@@ -142,67 +146,23 @@ STREAMERS = [
 ]
 
 # ══════════════════════════════════════════════════════════════════
-# 3. BOT
+# 3. ÉTAT VÉRIFICATION ROBLOX EN COURS
+# ══════════════════════════════════════════════════════════════════
+# { discord_user_id: { "roblox_id": int, "roblox_username": str, "code": str, "expires": datetime } }
+pending_verifications: dict[str, dict] = {}
+_verif_lock = threading.Lock()
+
+def generate_verif_code() -> str:
+    """Génère un code de vérification unique du format L3X-XXXX."""
+    chars = string.ascii_uppercase + string.digits
+    suffix = "".join(secrets.choice(chars) for _ in range(4))
+    return f"L3X-{suffix}"
+
+# ══════════════════════════════════════════════════════════════════
+# 4. BOT
 # ══════════════════════════════════════════════════════════════════
 intents = discord.Intents.default()
 intents.message_content = True
-
-class RobloxVerifyView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        
-        self.add_item(discord.ui.Button(
-            label="🔗 S'abonner à mon profil Roblox",
-            style=discord.ButtonStyle.link,
-            url=ROBLOX_PROFILE_URL,
-            row=0
-        ))
-        
-        self.show_role_btn = discord.ui.Button(
-            label="🔄 J'ai visité le profil",
-            style=discord.ButtonStyle.blurple,
-            custom_id="show_role_btn_persistent",
-            row=0
-        )
-        self.show_role_btn.callback = self.show_role_callback
-        self.add_item(self.show_role_btn)
-
-        self.verify_btn = discord.ui.Button(
-            label="✅ Je me suis abonné, je veux mon rôle",
-            style=discord.ButtonStyle.green,
-            custom_id="verify_roblox_btn_persistent",
-            row=1
-        )
-        self.verify_btn.callback = self.verify_callback
-
-    async def show_role_callback(self, interaction: discord.Interaction):
-        self.remove_item(self.show_role_btn)
-        self.add_item(self.verify_btn)
-        await interaction.response.edit_message(view=self)
-
-    async def verify_callback(self, interaction: discord.Interaction):
-        guild = interaction.guild
-        if not guild:
-            return
-
-        role = guild.get_role(ROBLOX_ROLE_ID)
-        if not role:
-            await interaction.response.send_message("❌ Erreur : Rôle introuvable sur le serveur.", ephemeral=True)
-            return
-
-        if role in interaction.user.roles:
-            await interaction.response.send_message("⚠️ Tu possèdes déjà ce rôle !", ephemeral=True)
-            return
-
-        try:
-            await interaction.user.add_roles(role)
-            await interaction.response.send_message(
-                f"✅ Merci pour l'abonnement ! Le rôle **{role.name}** t'a été attribué avec succès.",
-                ephemeral=True
-            )
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Une erreur est survenue : {e}", ephemeral=True)
-
 
 class L3XBot(commands.Bot):
     def __init__(self):
@@ -214,7 +174,7 @@ class L3XBot(commands.Bot):
 
     async def setup_hook(self):
         self.session = aiohttp.ClientSession()
-        self.add_view(RobloxVerifyView())
+        self.add_view(RobloxVerifyConfirmView())   # FIX #5 — re-register persistent view
         check_roblox_update.start()
         check_rocket_league_patches.start()
         check_fortnite_updates.start()
@@ -237,7 +197,7 @@ class L3XBot(commands.Bot):
 bot = L3XBot()
 
 # ══════════════════════════════════════════════════════════════════
-# 4. ÉTAT GLOBAL
+# 5. ÉTAT GLOBAL
 # ══════════════════════════════════════════════════════════════════
 last_roblox_version_hash: str | None = None
 last_rl_patch_title:      str | None = None
@@ -247,7 +207,7 @@ current_fn_version:        str        = "v39.00"
 currently_live:            set[str]   = set()
 
 # ══════════════════════════════════════════════════════════════════
-# 5. HELPERS
+# 6. HELPERS
 # ══════════════════════════════════════════════════════════════════
 async def get_twitch_token() -> str | None:
     async with bot._token_lock:
@@ -267,8 +227,8 @@ async def get_twitch_token() -> str | None:
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    bot._twitch_token         = data["access_token"]
-                    bot._twitch_token_expiry  = time_module.monotonic() + data.get("expires_in", 3600)
+                    bot._twitch_token        = data["access_token"]
+                    bot._twitch_token_expiry = time_module.monotonic() + data.get("expires_in", 3600)
                     return bot._twitch_token
                 print(f"Token Twitch HTTP {resp.status}")
         except Exception as e:
@@ -288,16 +248,220 @@ async def send_rl_shop(channel: discord.TextChannel) -> None:
     embed.set_footer(text="L3X BOT — Alertes Rocket League")
     await channel.send(embed=embed)
 
+async def roblox_get_user_by_username(username: str) -> dict | None:
+    """Résout un username Roblox → { id, name, displayName } via l'API publique."""
+    url = "https://users.roblox.com/v1/usernames/users"
+    payload = {"usernames": [username], "excludeBannedUsers": True}
+    try:
+        async with bot.session.post(
+            url,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+            users = data.get("data", [])
+            return users[0] if users else None
+    except Exception as e:
+        print(f"Roblox username lookup erreur : {e}")
+        return None
+
+async def roblox_get_user_description(roblox_id: int) -> str | None:
+    """Récupère la description/bio d'un user Roblox via l'API publique."""
+    url = f"https://users.roblox.com/v1/users/{roblox_id}"
+    try:
+        async with bot.session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+            return data.get("description", "")
+    except Exception as e:
+        print(f"Roblox bio fetch erreur : {e}")
+        return None
+
 # ══════════════════════════════════════════════════════════════════
-# 6. COMMANDES SLASH
+# 7. LINKROBLOX — MODAL + VUE DE CONFIRMATION
 # ══════════════════════════════════════════════════════════════════
 
+class RobloxUsernameModal(discord.ui.Modal, title="Vérification Roblox"):
+    username = discord.ui.TextInput(
+        label="Ton username Roblox",
+        placeholder="ex: Builderman",
+        min_length=3,
+        max_length=20,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        roblox_user = await roblox_get_user_by_username(self.username.value.strip())
+        if not roblox_user:
+            await interaction.followup.send(
+                "❌ Username Roblox introuvable. Vérifie l'orthographe et réessaie.",
+                ephemeral=True,
+            )
+            return
+
+        roblox_id       = roblox_user["id"]
+        roblox_username = roblox_user["name"]
+        discord_uid     = str(interaction.user.id)
+
+        # Génère un code unique pour cet utilisateur
+        code = generate_verif_code()
+        expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+
+        with _verif_lock:
+            pending_verifications[discord_uid] = {
+                "roblox_id":       roblox_id,
+                "roblox_username": roblox_username,
+                "code":            code,
+                "expires":         expires,
+            }
+
+        embed = discord.Embed(
+            title="🔐 Étape 2 — Place le code dans ta bio Roblox",
+            description=(
+                f"Compte détecté : **{roblox_username}** (`{roblox_id}`)\n\n"
+                f"**1.** Va sur ton profil Roblox → **[Modifier ma bio]({ROBLOX_PROFILE_URL})**\n"
+                f"**2.** Colle ce code **exactement** dans ta bio :\n\n"
+                f"```\n{code}\n```\n"
+                f"**3.** Sauvegarde, puis clique sur **✅ Vérifier** ci-dessous.\n\n"
+                f"⏱️ Ce code expire dans **15 minutes**."
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="L3X BOT — Vérification Roblox")
+
+        await interaction.followup.send(
+            embed=embed,
+            view=RobloxVerifyConfirmView(),
+            ephemeral=True,
+        )
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        print(f"RobloxUsernameModal erreur : {error}")
+        if not interaction.response.is_done():
+            await interaction.response.send_message("❌ Erreur inattendue.", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ Erreur inattendue.", ephemeral=True)
+
+
+class RobloxVerifyConfirmView(discord.ui.View):
+    """Vue persistante — bouton de vérification finale."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="✅ Vérifier",
+        style=discord.ButtonStyle.green,
+        custom_id="roblox_verify_confirm_v2",
+    )
+    async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        discord_uid = str(interaction.user.id)
+        now         = datetime.now(timezone.utc)
+
+        with _verif_lock:
+            pending = pending_verifications.get(discord_uid)
+
+        if not pending:
+            await interaction.followup.send(
+                "❌ Aucune vérification en attente. Relance `/linkroblox`.",
+                ephemeral=True,
+            )
+            return
+
+        if pending["expires"] < now:
+            with _verif_lock:
+                pending_verifications.pop(discord_uid, None)
+            await interaction.followup.send(
+                "❌ Code expiré (15 min dépassées). Relance `/linkroblox` pour obtenir un nouveau code.",
+                ephemeral=True,
+            )
+            return
+
+        # Fetch la bio Roblox et cherche le code
+        bio = await roblox_get_user_description(pending["roblox_id"])
+        if bio is None:
+            await interaction.followup.send(
+                "❌ Impossible de lire ta bio Roblox. Réessaie dans quelques secondes.",
+                ephemeral=True,
+            )
+            return
+
+        if pending["code"] not in bio:
+            await interaction.followup.send(
+                f"❌ Code **{pending['code']}** introuvable dans ta bio Roblox.\n\n"
+                "Assure-toi de l'avoir copié exactement et sauvegardé, puis réessaie.",
+                ephemeral=True,
+            )
+            return
+
+        # Code trouvé → attribution du rôle
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("❌ Erreur serveur.", ephemeral=True)
+            return
+
+        role = guild.get_role(ROBLOX_ROLE_ID)
+        if not role:
+            await interaction.followup.send("❌ Rôle introuvable sur le serveur.", ephemeral=True)
+            return
+
+        try:
+            await interaction.user.add_roles(role, reason="Vérification Roblox bio réussie")
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ Le bot n'a pas les permissions pour attribuer ce rôle.", ephemeral=True
+            )
+            return
+
+        # Nettoie la vérification en attente
+        with _verif_lock:
+            pending_verifications.pop(discord_uid, None)
+
+        embed = discord.Embed(
+            title="✅ Vérification réussie !",
+            description=(
+                f"Compte Roblox **{pending['roblox_username']}** vérifié.\n"
+                f"Le rôle **{role.name}** t'a été attribué.\n\n"
+                f"Tu peux retirer le code de ta bio si tu veux."
+            ),
+            color=discord.Color.green(),
+        )
+        embed.set_footer(text="L3X BOT — Vérification Roblox")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @discord.ui.button(
+        label="🔄 Changer de compte",
+        style=discord.ButtonStyle.grey,
+        custom_id="roblox_verify_restart_v2",
+    )
+    async def restart(self, interaction: discord.Interaction, button: discord.ui.Button):
+        discord_uid = str(interaction.user.id)
+        with _verif_lock:
+            pending_verifications.pop(discord_uid, None)
+        await interaction.response.send_modal(RobloxUsernameModal())
+
+
+# ══════════════════════════════════════════════════════════════════
+# 8. COMMANDES SLASH
+# ══════════════════════════════════════════════════════════════════
+
+# ── /key ──────────────────────────────────────────────────────────
 @bot.tree.command(name="key", description="Génère une clé d'accès unique valable 24h.")
 async def slash_key(interaction: discord.Interaction):
     if interaction.channel_id != KEY_CHANNEL_ID:
         await interaction.response.send_message(
             f"❌ Tu ne peux utiliser cette commande que dans le salon <#{KEY_CHANNEL_ID}> !",
-            ephemeral=True
+            ephemeral=True,
         )
         return
 
@@ -306,8 +470,8 @@ async def slash_key(interaction: discord.Interaction):
     now     = datetime.now(timezone.utc)
 
     with _store_lock:
-        if user_id in key_store and key_store[user_id]["expires"] > now:
-            existing  = key_store[user_id]
+        existing = key_store.get(user_id)
+        if existing and existing["expires"] > now:
             remaining = existing["expires"] - now
             hours     = int(remaining.total_seconds() // 3600)
             minutes   = int((remaining.total_seconds() % 3600) // 60)
@@ -341,37 +505,37 @@ async def slash_key(interaction: discord.Interaction):
     embed.set_footer(text="L3X BOT — Système de clés")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="linkroblox", description="Abonne-toi à mon profil Roblox pour récupérer ton rôle.")
+
+# ── /linkroblox ───────────────────────────────────────────────────
+@bot.tree.command(name="linkroblox", description="Vérifie ton compte Roblox pour récupérer ton rôle.")
 async def slash_linkroblox(interaction: discord.Interaction):
     if interaction.channel_id != ROBLOX_VERIFY_CHANNEL_ID:
         await interaction.response.send_message(
             f"❌ Tu ne peux utiliser cette commande que dans le salon <#{ROBLOX_VERIFY_CHANNEL_ID}> !",
-            ephemeral=True
+            ephemeral=True,
         )
         return
 
-    embed = discord.Embed(
-        title="🤖 Vérification Roblox & Abonnement",
-        description=(
-            "Pour obtenir ton rôle exclusif sur le serveur :\n\n"
-            "1. Clique sur le bouton ci-dessous pour t'abonner à mon profil Roblox.\n"
-            "2. Une fois fait, clique sur **🔄 J'ai visité le profil** pour afficher le bouton de réclamation !"
-        ),
-        color=discord.Color.blue(),
-    )
-    embed.set_footer(text="L3X BOT — Vérification")
-    
-    await interaction.response.send_message(
-        embed=embed, 
-        view=RobloxVerifyView()
-    )
+    # Vérifie si l'utilisateur a déjà le rôle
+    role = interaction.guild.get_role(ROBLOX_ROLE_ID) if interaction.guild else None
+    if role and role in interaction.user.roles:
+        await interaction.response.send_message(
+            "✅ Tu as déjà le rôle Roblox vérifié !", ephemeral=True
+        )
+        return
 
+    await interaction.response.send_modal(RobloxUsernameModal())
+
+
+# ── /shoprl ───────────────────────────────────────────────────────
 @bot.tree.command(name="shoprl", description="[ADMIN] Force l'affichage de la boutique Rocket League.")
 @app_commands.checks.has_permissions(administrator=True)
 async def slash_shoprl(interaction: discord.Interaction):
     await send_rl_shop(interaction.channel)
     await interaction.response.send_message("✅ Boutique envoyée.", ephemeral=True)
 
+
+# ── /versionrl ────────────────────────────────────────────────────
 @bot.tree.command(name="versionrl", description="Affiche la version actuelle et les patch notes de Rocket League.")
 async def slash_versionrl(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -385,6 +549,8 @@ async def slash_versionrl(interaction: discord.Interaction):
     embed.set_footer(text=f"Demandé par {interaction.user.name} — L3X BOT")
     await interaction.response.send_message(embed=embed)
 
+
+# ── /versionfn ────────────────────────────────────────────────────
 @bot.tree.command(name="versionfn", description="Affiche les actualités et version de Fortnite.")
 async def slash_versionfn(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -398,6 +564,8 @@ async def slash_versionfn(interaction: discord.Interaction):
     embed.set_footer(text=f"Demandé par {interaction.user.name} — L3X BOT")
     await interaction.response.send_message(embed=embed)
 
+
+# ── /robloxversion ────────────────────────────────────────────────
 @bot.tree.command(name="robloxversion", description="Donne la version officielle actuelle de Roblox.")
 async def slash_robloxversion(interaction: discord.Interaction):
     url = "https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer"
@@ -412,12 +580,12 @@ async def slash_robloxversion(interaction: discord.Interaction):
                 )
                 await interaction.response.send_message(embed=embed)
             else:
-                await interaction.response.send_message(
-                    f"❌ HTTP {resp.status}", ephemeral=True
-                )
+                await interaction.response.send_message(f"❌ HTTP {resp.status}", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"❌ Erreur : {e}", ephemeral=True)
 
+
+# ── /animesama ────────────────────────────────────────────────────
 class AnimeView(discord.ui.View):
     def __init__(self, anime_name: str):
         super().__init__(timeout=180)
@@ -440,32 +608,37 @@ async def slash_animesama(interaction: discord.Interaction, nom: str):
     embed.set_footer(text="L3X BOT — Streaming Anime")
     await interaction.response.send_message(embed=embed, view=AnimeView(nom), ephemeral=True)
 
+
+# ── /keys (admin) ─────────────────────────────────────────────────
 @bot.tree.command(name="keys", description="[ADMIN] Liste toutes les clés actives.")
 @app_commands.checks.has_permissions(administrator=True)
 async def slash_keys(interaction: discord.Interaction):
     cleanup_expired_keys()
     now = datetime.now(timezone.utc)
     with _store_lock:
-        if not key_store:
-            await interaction.response.send_message("Aucune clé active.", ephemeral=True)
-            return
+        snapshot = dict(key_store)
 
-        lines = []
-        for uid, data in key_store.items():
-            remaining = data["expires"] - now
-            h = int(remaining.total_seconds() // 3600)
-            m = int((remaining.total_seconds() % 3600) // 60)
-            lines.append(f"`{data['key']}` — {data['username']} — expire dans {h}h{m}m")
-        count = len(key_store)
+    if not snapshot:
+        await interaction.response.send_message("Aucune clé active.", ephemeral=True)
+        return
+
+    lines = []
+    for uid, data in snapshot.items():
+        remaining = data["expires"] - now
+        h = int(remaining.total_seconds() // 3600)
+        m = int((remaining.total_seconds() % 3600) // 60)
+        lines.append(f"`{data['key']}` — {data['username']} — expire dans {h}h{m}m")
 
     embed = discord.Embed(
-        title=f"🔑 {count} clé(s) active(s)",
+        title=f"🔑 {len(snapshot)} clé(s) active(s)",
         description="\n".join(lines),
         color=discord.Color.blurple(),
     )
     embed.set_footer(text="L3X BOT — Admin")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+
+# ── /revokekey (admin) ────────────────────────────────────────────
 @bot.tree.command(name="revokekey", description="[ADMIN] Révoque la clé d'un utilisateur.")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.describe(user="L'utilisateur dont révoquer la clé")
@@ -475,15 +648,17 @@ async def slash_revokekey(interaction: discord.Interaction, user: discord.Member
         if uid in key_store:
             del key_store[uid]
             _save_store(key_store)
-            revoked = True
+            removed = True
         else:
-            revoked = False
+            removed = False
 
-    if revoked:
+    if removed:
         await interaction.response.send_message(f"✅ Clé de {user} révoquée.", ephemeral=True)
     else:
         await interaction.response.send_message(f"❌ {user} n'a pas de clé active.", ephemeral=True)
 
+
+# ── Gestion erreurs slash ──────────────────────────────────────────
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     msg = (
@@ -494,10 +669,11 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     if not interaction.response.is_done():
         await interaction.response.send_message(msg, ephemeral=True)
     else:
-        await interaction.followup.send(msg, ephemeral=True)
+        await interaction.followup.send(msg, ephemeral=True)   # FIX #3
+
 
 # ══════════════════════════════════════════════════════════════════
-# 7. LOOPS AUTOMATIQUES
+# 9. LOOPS AUTOMATIQUES
 # ══════════════════════════════════════════════════════════════════
 
 @tasks.loop(time=time(hour=20, minute=0, tzinfo=timezone.utc))
@@ -505,6 +681,7 @@ async def daily_rl_shop():
     channel = bot.get_channel(RL_SHOP_CHANNEL_ID)
     if channel:
         await send_rl_shop(channel)
+
 
 @tasks.loop(minutes=5)
 async def check_rocket_league_patches():
@@ -561,6 +738,7 @@ async def check_rocket_league_patches():
     except Exception as e:
         print(f"Erreur patch RL : {e}")
 
+
 @tasks.loop(minutes=10)
 async def check_fortnite_updates():
     global last_fn_news_title, current_fn_version
@@ -615,6 +793,7 @@ async def check_fortnite_updates():
     except Exception as e:
         print(f"Erreur Fortnite : {e}")
 
+
 @tasks.loop(minutes=5)
 async def check_roblox_update():
     global last_roblox_version_hash
@@ -653,6 +832,7 @@ async def check_roblox_update():
     except Exception as e:
         print(f"Erreur Roblox : {e}")
 
+
 @tasks.loop(minutes=3)
 async def check_twitch_streams():
     token = await get_twitch_token()
@@ -664,9 +844,9 @@ async def check_twitch_streams():
     all_ok = True
 
     for i in range(0, len(STREAMERS), 100):
-        chunk  = STREAMERS[i:i + 100]
-        params = [("user_login", s) for s in chunk]
-        streams: list = []
+        chunk   = STREAMERS[i:i + 100]
+        params  = [("user_login", s) for s in chunk]
+        streams: list = []                 # FIX #4 — initialisé avant la boucle d'attempts
 
         for attempt in range(2):
             try:
@@ -735,8 +915,9 @@ async def check_twitch_streams():
     if all_ok:
         currently_live.intersection_update(active_this_check)
 
+
 # ══════════════════════════════════════════════════════════════════
-# 8. DÉMARRAGE
+# 10. DÉMARRAGE
 # ══════════════════════════════════════════════════════════════════
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
