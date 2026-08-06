@@ -135,6 +135,28 @@ async def version_fn(ctx):
     embed.set_footer(text=f"Demandé par {ctx.author.name} - L3X BOT")
     await ctx.send(embed=embed)
 
+# Commande manuelle !robloxversion (Réservée aux administrateurs)
+@bot.command(name="robloxversion", aliases=["versionroblox"])
+@commands.has_permissions(administrator=True)
+async def roblox_version(ctx):
+    url = "https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    version_hash = data.get("clientVersionUpload")
+                    
+                    embed = discord.Embed(
+                        description=f"🎮 **Version actuelle de Roblox**\n\nLa version officielle actuelle est : `{version_hash}`",
+                        color=discord.Color.blue()
+                    )
+                    await ctx.send(embed=embed)
+                else:
+                    await ctx.send("❌ Impossible de récupérer la version actuelle de Roblox.")
+        except Exception as e:
+            await ctx.send(f"❌ Erreur lors de la récupération : {e}")
+
 # Gestionnaire d'erreurs pour les permissions
 @bot.event
 async def on_command_error(ctx, error):
