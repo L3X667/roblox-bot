@@ -10,9 +10,6 @@ from datetime import time, timezone
 import xml.etree.ElementTree as ET
 import re
 import urllib.parse
-import cloudscraper
-from bs4 import BeautifulSoup
-import requests
 
 # ==========================================
 # 1. FLASK KEEP-ALIVE (RENDER)
@@ -37,7 +34,6 @@ keep_alive()
 # 2. BOT DISCORD
 # ==========================================
 intents = discord.Intents.all()
-scrap = cloudscraper.create_scraper()
 
 class L3XBot(commands.Bot):
     def __init__(self):
