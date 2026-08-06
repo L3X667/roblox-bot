@@ -101,13 +101,15 @@ async def on_ready():
     check_twitch_streams.start()
     daily_rl_shop.start()
 
-# Commande manuelle !shoprl
+# Commande manuelle !shoprl (Réservée aux administrateurs)
 @bot.command(name="shoprl", aliases=["shoprocketleague"])
+@commands.has_permissions(administrator=True)
 async def manual_shop(ctx):
     await send_rl_shop(ctx.channel)
 
-# Commande manuelle !versionrl
+# Commande manuelle !versionrl (Réservée aux administrateurs)
 @bot.command(name="versionrl", aliases=["versionrocketleague"])
+@commands.has_permissions(administrator=True)
 async def version_rl(ctx):
     patch_url = "https://www.rocketleague.com/news/tag/patch-notes"
     embed = discord.Embed(
@@ -119,8 +121,9 @@ async def version_rl(ctx):
     embed.set_footer(text=f"Demandé par {ctx.author.name} - L3X BOT")
     await ctx.send(embed=embed)
 
-# Commande manuelle !versionfn
+# Commande manuelle !versionfn (Réservée aux administrateurs)
 @bot.command(name="versionfn", aliases=["versionfortnite"])
+@commands.has_permissions(administrator=True)
 async def version_fn(ctx):
     fn_url = "https://www.fortnite.com/news"
     embed = discord.Embed(
@@ -131,6 +134,14 @@ async def version_fn(ctx):
     embed.add_field(name="📌 Suivi des versions", value="Lien direct vers le site officiel Fortnite", inline=False)
     embed.set_footer(text=f"Demandé par {ctx.author.name} - L3X BOT")
     await ctx.send(embed=embed)
+
+# Gestionnaire d'erreurs pour les permissions
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Tu n'as pas les permissions nécessaires pour utiliser cette commande.", delete_after=5)
+    else:
+        raise error
 
 # Tâche quotidienne automatique de la boutique (20h00 UTC)
 @tasks.loop(time=time(hour=20, minute=0, tzinfo=timezone.utc))
