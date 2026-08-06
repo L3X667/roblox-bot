@@ -35,9 +35,8 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# IDs des salons Discord
-ROBLOX_UNIVERSE_ID = 6880080644
-ROBLOX_CHANNEL_ID = 1344403756811423854
+# IDs des salons Discord mis à jour
+ROBLOX_CHANNEL_ID = 1534679583947886594
 TWITCH_CHANNEL_ID = 1517233263293497384
 RL_SHOP_CHANNEL_ID = 1515508545418952734     # Salon pour la Boutique RL (!shoprl)
 RL_UPDATES_CHANNEL_ID = 1534708870352732241 # Salon pour les Versions / Patch Notes Rocket League
@@ -69,7 +68,7 @@ STREAMERS = [
     "wavepunk", "achieves"
 ]
 
-last_roblox_timestamp = None
+last_roblox_version_hash = None
 last_rl_patch_title = None
 current_rl_version = "v2.72"
 
@@ -254,36 +253,32 @@ async def check_fortnite_updates():
         except Exception as e:
             print(f"Erreur vérification actualités Fortnite : {e}")
 
-@tasks.loop(minutes=2)
+@tasks.loop(minutes=5)
 async def check_roblox_update():
-    global last_roblox_timestamp
-    url = f"https://games.roblox.com/v1/games?universeIds={ROBLOX_UNIVERSE_ID}"
+    global last_roblox_version_hash
+    url = "https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer"
 
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(url) as response:
                 if response.status == 200:
                     data = await response.json()
-                    if data.get("data"):
-                        game_info = data["data"][0]
-                        updated_at = game_info.get("updated")
-                        name = game_info.get("name")
+                    version_hash = data.get("clientVersionUpload")
 
-                        if last_roblox_timestamp is None:
-                            last_roblox_timestamp = updated_at
-                        elif updated_at != last_roblox_timestamp:
-                            last_roblox_timestamp = updated_at
-                            channel = bot.get_channel(ROBLOX_CHANNEL_ID)
-                            if channel:
-                                embed = discord.Embed(
-                                    title="🚀 NOUVELLE MISE À JOUR ROBLOX !",
-                                    description=f"Le jeu **{name}** vient de recevoir une mise à jour !",
-                                    color=discord.Color.green()
-                                )
-                                embed.add_field(name="Horodatage", value=updated_at, inline=False)
-                                await channel.send(content="@everyone", embed=embed)
+                    if last_roblox_version_hash is None:
+                        last_roblox_version_hash = version_hash
+                    elif version_hash != last_roblox_version_hash:
+                        last_roblox_version_hash = version_hash
+                        channel = bot.get_channel(ROBLOX_CHANNEL_ID)
+                        if channel:
+                            embed = discord.Embed(
+                                description=f"🎮 **Nouvelle version de Roblox déployée !**\n\nLa nouvelle version officielle est : `{version_hash}`",
+                                color=discord.Color.blue()
+                            )
+                            embed.set_footer(text="Alerte Roblox automatique - L3X BOT")
+                            await channel.send(content="@everyone", embed=embed)
         except Exception as e:
-            print(f"Erreur Roblox : {e}")
+            print(f"Erreur vérification Roblox : {e}")
 
 async def get_twitch_token():
     global twitch_access_token
