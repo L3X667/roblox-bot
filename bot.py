@@ -105,9 +105,11 @@ RL_SHOP_CHANNEL_ID    = int(os.getenv("RL_SHOP_CHANNEL_ID",    15155085454189527
 RL_UPDATES_CHANNEL_ID = int(os.getenv("RL_UPDATES_CHANNEL_ID", 1534708870352732241))
 FN_UPDATES_CHANNEL_ID = int(os.getenv("FN_UPDATES_CHANNEL_ID", 1534724078584336384))
 
-# IDs de restrictions pour les commandes
+# ID de restriction pour la commande /key
 KEY_CHANNEL_ID        = 1534835833922785431
-LINKROBLOX_CHANNEL_ID = 1518014650829242388
+
+# ID de restriction pour la commande /linkroblox (Salon exigé)
+ROBLOX_VERIFY_CHANNEL_ID = 1518014650829242388
 
 # ID du rôle Roblox à attribuer via /linkroblox
 ROBLOX_ROLE_ID        = 1518016527499132948
@@ -277,18 +279,45 @@ async def slash_key(interaction: discord.Interaction):
     embed.set_footer(text="L3X BOT — Système de clés")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ── /linkroblox (Abonnement + Rôle) ───────────────────────────────
+# ── /linkroblox (Abonnement + Rôle dynamique permanent) ───────────
 class RobloxVerifyView(discord.ui.View):
     def __init__(self, roblox_url: str):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)  # timeout=None pour que les boutons neexpirent pas
+        
+        # 1. Bouton de redirection vers le profil (toujours visible)
         self.add_item(discord.ui.Button(
             label="🔗 S'abonner à mon profil Roblox",
             style=discord.ButtonStyle.link,
-            url=roblox_url
+            url=roblox_url,
+            row=0
         ))
+        
+        # 2. Bouton d'étape intermédiaire pour afficher le rôle
+        self.show_role_btn = discord.ui.Button(
+            label="🔄 J'ai visité le profil",
+            style=discord.ButtonStyle.blurple,
+            custom_id="show_role_btn_persistent",
+            row=0
+        )
+        self.show_role_btn.callback = self.show_role_callback
+        self.add_item(self.show_role_btn)
 
-    @discord.ui.button(label="✅ Je me suis abonné, je veux mon rôle", style=discord.ButtonStyle.green, custom_id="verify_roblox_btn")
-    async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 3. Bouton final pour réclamer le rôle (caché au début, ajouté dynamiquement après clic)
+        self.verify_btn = discord.ui.Button(
+            label="✅ Je me suis abonné, je veux mon rôle",
+            style=discord.ButtonStyle.green,
+            custom_id="verify_roblox_btn_persistent",
+            row=1
+        )
+        self.verify_btn.callback = self.verify_callback
+
+    async def show_role_callback(self, interaction: discord.Interaction):
+        # Retire le bouton intermédiaire et ajoute le bouton de réclamation de rôle
+        self.remove_item(self.show_role_btn)
+        self.add_item(self.verify_btn)
+        await interaction.response.edit_message(view=self)
+
+    async def verify_callback(self, interaction: discord.Interaction):
         guild = interaction.guild
         if not guild:
             return
@@ -313,31 +342,31 @@ class RobloxVerifyView(discord.ui.View):
 
 @bot.tree.command(name="linkroblox", description="Abonne-toi à mon profil Roblox pour récupérer ton rôle.")
 async def slash_linkroblox(interaction: discord.Interaction):
-    # VÉRIFICATION DU SALON AUTORISÉ
-    if interaction.channel_id != LINKROBLOX_CHANNEL_ID:
+    # Vérifie si la commande est exécutée dans le bon salon
+    if interaction.channel_id != ROBLOX_VERIFY_CHANNEL_ID:
         await interaction.response.send_message(
-            f"❌ Tu ne peux utiliser cette commande que dans le salon <#{LINKROBLOX_CHANNEL_ID}> !",
+            f"❌ Tu ne peux utiliser cette commande que dans le salon <#{ROBLOX_VERIFY_CHANNEL_ID}> !",
             ephemeral=True
         )
         return
 
-    roblox_profile_url = "https://www.roblox.com/fr/fr/users/1353605326/profile"
+    roblox_profile_url = "https://www.roblox.com/users/1353605326/profile"
     
     embed = discord.Embed(
         title="🤖 Vérification Roblox & Abonnement",
         description=(
-            "Pour obtenir ton rôle exclusif sur le serveur, c'est très simple :\n\n"
+            "Pour obtenir ton rôle exclusif sur le serveur :\n\n"
             "1. Clique sur le bouton ci-dessous pour t'abonner à mon profil Roblox.\n"
-            "2. Reviens ici et clique sur **✅ Je me suis abonné, je veux mon rôle** !"
+            "2. Une fois fait, clique sur **🔄 J'ai visité le profil** pour afficher le bouton de réclamation !"
         ),
         color=discord.Color.blue(),
     )
     embed.set_footer(text="L3X BOT — Vérification")
     
+    # Envoi public (visible par tout le monde, et le message reste en permanence)
     await interaction.response.send_message(
         embed=embed, 
-        view=RobloxVerifyView(roblox_profile_url), 
-        ephemeral=True
+        view=RobloxVerifyView(roblox_profile_url)
     )
 
 # ── /shoprl ───────────────────────────────────────────────────────
