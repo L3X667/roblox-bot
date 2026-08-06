@@ -39,7 +39,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 ROBLOX_UNIVERSE_ID = 6880080644
 ROBLOX_CHANNEL_ID = 1344403756811423854
 TWITCH_CHANNEL_ID = 1517233263293497384
-RL_SHOP_CHANNEL_ID = 1515508545418952734     # Salon pour la Boutique RL (!shop)
+RL_SHOP_CHANNEL_ID = 1515508545418952734     # Salon pour la Boutique RL (!shoprl)
 RL_UPDATES_CHANNEL_ID = 1534708870352732241 # Salon pour les Versions / Patch Notes Rocket League
 FN_UPDATES_CHANNEL_ID = 1534724078584336384 # Salon pour les Actualités / Versions Fortnite
 
@@ -101,8 +101,8 @@ async def on_ready():
     check_twitch_streams.start()
     daily_rl_shop.start()
 
-# Commande manuelle !shop
-@bot.command(name="shop")
+# Commande manuelle !shoprl
+@bot.command(name="shoprl", aliases=["shoprocketleague"])
 async def manual_shop(ctx):
     await send_rl_shop(ctx.channel)
 
