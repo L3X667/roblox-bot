@@ -75,6 +75,7 @@ FN_UPDATES_CHANNEL_ID = int(os.getenv("FN_UPDATES_CHANNEL_ID", 15347240785843363
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
 twitch_access_token = None
+_token_lock = asyncio.Lock()
 
 STREAMERS = [
     "mawkzy_", "rocketbaguette", "fuury_off", "atowwwww", "kaydop", "vatira", 
@@ -154,7 +155,7 @@ async def slash_robloxversion(interaction: discord.Interaction):
         async with bot.session.get(url) as response:
             if response.status == 200:
                 data = await response.json()
-                version_hash = data.get("clientVersionUpload")
+                version_hash = data.get("clientVersionUpload", "")
                 embed = discord.Embed(
                     description=f"🎮 **Version actuelle de Roblox**\n\nLa version officielle actuelle est : `{version_hash}`",
                     color=discord.Color.blue()
@@ -171,7 +172,7 @@ async def slash_robloxversion(interaction: discord.Interaction):
 class AnimeView(discord.ui.View):
     def __init__(self, anime_name: str):
         super().__init__(timeout=180)
-        query = urllib.parse.quote(anime_name)
+        query = urllib.parse.quote(anime_name, safe='')
         url = f"https://anime-sama.to/catalogue/?search={query}"
         
         self.add_item(discord.ui.Button(
@@ -309,13 +310,12 @@ async def check_roblox_update():
         async with bot.session.get(url) as response:
             if response.status == 200:
                 data = await response.json()
-                version_hash = data.get("clientVersionUpload")
-                normalized_hash = version_hash.lower() if version_hash else ""
+                version_hash = data.get("clientVersionUpload", "").lower()
 
                 if last_roblox_version_hash is None:
-                    last_roblox_version_hash = normalized_hash
-                elif normalized_hash != last_roblox_version_hash:
-                    last_roblox_version_hash = normalized_hash
+                    last_roblox_version_hash = version_hash
+                elif version_hash != last_roblox_version_hash:
+                    last_roblox_version_hash = version_hash
                     channel = bot.get_channel(ROBLOX_CHANNEL_ID)
                     if channel:
                         embed = discord.Embed(
@@ -329,27 +329,29 @@ async def check_roblox_update():
 
 async def get_twitch_token():
     global twitch_access_token
-    if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
+    async with _token_lock:
+        if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
+            return None
+        url = "https://id.twitch.tv/oauth2/token"
+        params = {
+            "client_id": TWITCH_CLIENT_ID,
+            "client_secret": TWITCH_CLIENT_SECRET,
+            "grant_type": "client_credentials"
+        }
+        try:
+            async with bot.session.post(url, params=params) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    twitch_access_token = data.get("access_token")
+                    return twitch_access_token
+        except Exception as e:
+            print(f"Erreur génération token Twitch : {e}")
         return None
-    url = "https://id.twitch.tv/oauth2/token"
-    params = {
-        "client_id": TWITCH_CLIENT_ID,
-        "client_secret": TWITCH_CLIENT_SECRET,
-        "grant_type": "client_credentials"
-    }
-    try:
-        async with bot.session.post(url, params=params) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                twitch_access_token = data.get("access_token")
-                return twitch_access_token
-    except Exception as e:
-        print(f"Erreur génération token Twitch : {e}")
-    return None
 
 @tasks.loop(minutes=3)
 async def check_twitch_streams():
     global twitch_access_token
+
     if not twitch_access_token:
         await get_twitch_token()
         if not twitch_access_token:
@@ -357,59 +359,85 @@ async def check_twitch_streams():
 
     headers = {
         "Client-ID": TWITCH_CLIENT_ID,
-        "Authorization": f"Bearer {twitch_access_token}"
+        "Authorization": f"Bearer {twitch_access_token}",
     }
 
     chunk_size = 100
     streamer_chunks = [STREAMERS[i:i + chunk_size] for i in range(0, len(STREAMERS), chunk_size)]
-    active_live_this_check = set()
+    active_live_this_check: set[str] = set()
+    all_chunks_ok = True
 
     for chunk in streamer_chunks:
-        url = "https://api.twitch.tv/helix/streams?" + "&".join([f"user_login={s}" for s in chunk])
+        url = "https://api.twitch.tv/helix/streams?" + "&".join(
+            f"user_login={s}" for s in chunk
+        )
+        streams: list[dict] = []
+
         try:
             async with bot.session.get(url, headers=headers) as resp:
                 if resp.status == 401:
-                    await get_twitch_token()
-                    if not twitch_access_token:
+                    new_token = await get_twitch_token()
+                    if not new_token:
+                        all_chunks_ok = False
                         break
-                    headers["Authorization"] = f"Bearer {twitch_access_token}"
+                    headers["Authorization"] = f"Bearer {new_token}"
                     async with bot.session.get(url, headers=headers) as retry_resp:
                         if retry_resp.status == 200:
                             data = await retry_resp.json()
                             streams = data.get("data", [])
                         else:
+                            all_chunks_ok = False
                             continue
                 elif resp.status == 200:
                     data = await resp.json()
                     streams = data.get("data", [])
                 else:
+                    all_chunks_ok = False
+                    continue
+        except Exception as e:
+            print(f"Erreur vérification Twitch (chunk) : {e}")
+            all_chunks_ok = False
+            continue
+
+        for stream in streams:
+            user_login: str = stream["user_login"].lower()
+            game_name: str = stream.get("game_name", "")
+
+            if "rocket league" not in game_name.lower():
+                continue
+
+            active_live_this_check.add(user_login)
+
+            if user_login not in currently_live:
+                currently_live.add(user_login)
+                channel = bot.get_channel(TWITCH_CHANNEL_ID)
+                if not channel:
                     continue
 
-                for stream in streams:
-                    user_login = stream["user_login"].lower()
-                    game_name = stream.get("game_name", "")
-                    
-                    if "rocket league" in game_name.lower():
-                        active_live_this_check.add(user_login)
+                stream_url = f"https://www.twitch.tv/{user_login}"
+                thumbnail = (
+                    stream["thumbnail_url"]
+                    .replace("{width}", "320")
+                    .replace("{height}", "180")
+                )
+                embed = discord.Embed(
+                    title=f"🔴 {stream['user_name']} est en LIVE sur Rocket League !",
+                    description=(
+                        f"**Titre :** {stream['title']}\n"
+                        f"**Spectateurs :** 👁️ {stream['viewer_count']}"
+                    ),
+                    url=stream_url,
+                    color=discord.Color.purple(),
+                )
+                embed.set_thumbnail(url=thumbnail)
+                embed.add_field(name="Lien du Stream", value=stream_url, inline=False)
+                await channel.send(
+                    content=f"🔴 **{stream['user_name']}** est actuellement en direct !",
+                    embed=embed,
+                )
 
-                        if user_login not in currently_live:
-                            currently_live.add(user_login)
-                            channel = bot.get_channel(TWITCH_CHANNEL_ID)
-                            if channel:
-                                stream_url = f"https://www.twitch.tv/{user_login}"
-                                embed = discord.Embed(
-                                    title=f"🔴 {stream['user_name']} est en LIVE sur Rocket League !",
-                                    description=f"**Titre :** {stream['title']}\n**Spectateurs :** 👁️ {stream['viewer_count']}",
-                                    url=stream_url,
-                                    color=discord.Color.purple()
-                                )
-                                embed.set_thumbnail(url=stream['thumbnail_url'].replace("{width}", "320").replace("{height}", "180"))
-                                embed.add_field(name="Lien du Stream", value=stream_url, inline=False)
-                                await channel.send(content=f"🔴 **{stream['user_name']}** est actuellement en direct !", embed=embed)
-        except Exception as e:
-            print(f"Erreur vérification Twitch : {e}")
-
-    currently_live.difference_update(currently_live - active_live_this_check)
+    if all_chunks_ok:
+        currently_live.intersection_update(active_live_this_check)
 
 # ==========================================
 # 6. DÉMARRAGE DU BOT
