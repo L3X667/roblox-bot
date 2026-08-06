@@ -1,9 +1,10 @@
 import os
+import asyncio
+from flask import Flask
+from threading import Thread
 import discord
 from discord.ext import commands, tasks
 import aiohttp
-from flask import Flask
-from threading import Thread
 from datetime import time, timezone
 import xml.etree.ElementTree as ET
 import re
@@ -15,7 +16,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Le bot Roblox, Twitch, Rocket League & Fortnite est en ligne !"
+    return "Le bot Roblox, Twitch, Rocket League, Fortnite & Anime est en ligne !"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -33,12 +34,13 @@ keep_alive()
 intents = discord.Intents.default()
 intents.message_content = True
 
+# Utilisation de bot.tree pour supporter les Slash Commands (/)
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # IDs des salons Discord mis à jour
 ROBLOX_CHANNEL_ID = 1534679583947886594
 TWITCH_CHANNEL_ID = 1517233263293497384
-RL_SHOP_CHANNEL_ID = 1515508545418952734     # Salon pour la Boutique RL (!shoprl)
+RL_SHOP_CHANNEL_ID = 1515508545418952734      # Salon pour la Boutique RL (!shoprl)
 RL_UPDATES_CHANNEL_ID = 1534708870352732241 # Salon pour les Versions / Patch Notes Rocket League
 FN_UPDATES_CHANNEL_ID = 1534724078584336384 # Salon pour les Actualités / Versions Fortnite
 
@@ -94,6 +96,14 @@ async def send_rl_shop(target_channel):
 @bot.event
 async def on_ready():
     print(f"✅ Bot connecté avec succès en tant que : {bot.user}")
+    
+    # Synchronisation indispensable des commandes Slash (/)
+    try:
+        synced = await bot.tree.sync()
+        print(f"🔄 Commandes Slash synchronisées : {len(synced)}")
+    except Exception as e:
+        print(f"Erreur de synchronisation des commandes : {e}")
+
     check_roblox_update.start()
     check_rocket_league_patches.start()
     check_fortnite_updates.start()
@@ -155,6 +165,40 @@ async def roblox_version(ctx):
                     await ctx.send("❌ Impossible de récupérer la version actuelle de Roblox.")
         except Exception as e:
             await ctx.send(f"❌ Erreur lors de la récupération : {e}")
+
+
+# ==========================================
+# 3. COMMANDE SLASH ANIME-SAMA (/animesama)
+# ==========================================
+class AnimeView(discord.ui.View):
+    def __init__(self, anime_name: str):
+        super().__init__(timeout=180)
+        query = anime_name.replace(" ", "+")
+        url = f"https://anime-sama.fr/catalogue/?search={query}"
+        
+        self.add_item(discord.ui.Button(
+            label="📺 Choisir sur Anime-Sama",
+            style=discord.ButtonStyle.link,
+            url=url
+        ))
+
+@bot.tree.command(name="animesama", description="Recherche un animé sur Anime-Sama de façon privée.")
+async def animesama(interaction: discord.Interaction, nom: str):
+    embed = discord.Embed(
+        title="🌸 Recherche Anime-Sama",
+        description=f"Voici le résultat de ta recherche pour : **{nom}**",
+        color=discord.Color.from_rgb(255, 105, 180)
+    )
+    embed.add_field(
+        name="Instructions", 
+        value="Clique sur le bouton ci-dessous pour choisir ta saison et ton épisode directement sur le site en privé.", 
+        inline=False
+    )
+    embed.set_footer(text="L3X BOT - Streaming Anime")
+    
+    # ephemeral=True : visible uniquement par la personne qui tape la commande
+    await interaction.response.send_message(embed=embed, view=AnimeView(nom), ephemeral=True)
+
 
 # Gestionnaire d'erreurs pour les permissions
 @bot.event
@@ -358,7 +402,7 @@ async def check_twitch_streams():
             currently_live.remove(streamer)
 
 # ==========================================
-# 3. DÉMARRAGE DU BOT
+# 4. DÉMARRAGE DU BOT
 # ==========================================
 TOKEN = os.environ.get("DISCORD_TOKEN")
 if TOKEN:
