@@ -1,4 +1,3 @@
-# --- bot.py ---
 import os, json, asyncio, re, string, secrets, urllib.parse, time as time_module
 import xml.etree.ElementTree as ET
 from threading import Thread
@@ -44,7 +43,7 @@ def generate_key(length: int = 20) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 def cleanup_expired_keys() -> None:
-    now     = datetime.now(timezone.utc)
+    now      = datetime.now(timezone.utc)
     expired = [uid for uid, d in key_store.items() if d["expires"] < now]
     for uid in expired:
         del key_store[uid]
@@ -105,6 +104,9 @@ TWITCH_CHANNEL_ID     = int(os.getenv("TWITCH_CHANNEL_ID",     15172332632934973
 RL_SHOP_CHANNEL_ID    = int(os.getenv("RL_SHOP_CHANNEL_ID",    1515508545418952734))
 RL_UPDATES_CHANNEL_ID = int(os.getenv("RL_UPDATES_CHANNEL_ID", 1534708870352732241))
 FN_UPDATES_CHANNEL_ID = int(os.getenv("FN_UPDATES_CHANNEL_ID", 1534724078584336384))
+
+# ID de l'unique salon autorisé pour utiliser la commande /key
+KEY_CHANNEL_ID        = 1534835833922785431
 
 TWITCH_CLIENT_ID     = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
@@ -172,9 +174,9 @@ bot = L3XBot()
 last_roblox_version_hash: str | None = None
 last_rl_patch_title:      str | None = None
 current_rl_version:        str        = "v2.72"
-last_fn_news_title:       str | None = None
+last_fn_news_title:        str | None = None
 current_fn_version:        str        = "v39.00"
-currently_live:           set[str]   = set()
+currently_live:            set[str]   = set()
 
 # ══════════════════════════════════════════════════════════════════
 # 5. HELPERS
@@ -225,9 +227,17 @@ async def send_rl_shop(channel: discord.TextChannel) -> None:
 # ── /key ──────────────────────────────────────────────────────────
 @bot.tree.command(name="key", description="Génère une clé d'accès unique valable 24h.")
 async def slash_key(interaction: discord.Interaction):
+    # Vérification stricte du salon unique autorisé
+    if interaction.channel_id != KEY_CHANNEL_ID:
+        await interaction.response.send_message(
+            f"❌ Tu ne peux utiliser cette commande que dans le salon <#{KEY_CHANNEL_ID}> !",
+            ephemeral=True
+        )
+        return
+
     cleanup_expired_keys()
     user_id = str(interaction.user.id)
-    now     = datetime.now(timezone.utc)
+    now      = datetime.now(timezone.utc)
 
     if user_id in key_store and key_store[user_id]["expires"] > now:
         existing  = key_store[user_id]
@@ -249,7 +259,6 @@ async def slash_key(interaction: discord.Interaction):
     key_store[user_id] = {"key": new_key, "expires": expires, "username": str(interaction.user)}
     _save_store(key_store)
 
-    # AJOUT DU PRINT POUR VOIR LA CLE DIRECTEMENT DANS LES LOGS RENDER
     print(f"🔑 [NOUVELLE CLÉ] Utilisateur : {interaction.user} (ID: {user_id}) | Clé : {new_key}")
 
     embed = discord.Embed(
