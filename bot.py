@@ -1,25 +1,61 @@
 import os
 import asyncio
-from flask import Flask
+from flask import Flask, request, jsonify
 from threading import Thread
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import aiohttp
-from datetime import time, timezone
+from datetime import time, timezone, datetime, timedelta
 import xml.etree.ElementTree as ET
 import re
 import urllib.parse
 import time as time_module
+import secrets
+import string
 
 # ==========================================
 # 1. SERVEUR FLASK POUR RENDER (KEEP ALIVE)
 # ==========================================
 app = Flask('')
 
+# Stockage en mémoire des keys (dict user_id → {key, expires, username})
+key_store: dict[str, dict] = {}
+
+def generate_key(length: int = 20) -> str:
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+def cleanup_expired_keys():
+    now = datetime.now(timezone.utc)
+    expired = [uid for uid, data in key_store.items() if data["expires"] < now]
+    for uid in expired:
+        del key_store[uid]
+
 @app.route('/')
 def home():
     return "🚀 L3X BOT est en ligne et opérationnel !"
+
+@app.route('/validate_key', methods=['GET'])
+def validate_key():
+    key = request.args.get('key', '').strip()
+    if not key:
+        return jsonify({"valid": False, "reason": "Aucune clé fournie"}), 400
+
+    now = datetime.now(timezone.utc)
+    for user_id, data in key_store.items():
+        if data["key"] == key:
+            if data["expires"] > now:
+                remaining = data["expires"] - now
+                return jsonify({
+                    "valid": True,
+                    "user": data["username"],
+                    "expires_in_seconds": int(remaining.total_seconds())
+                })
+            else:
+                return jsonify({"valid": False, "reason": "Clé expirée"})
+
+    return jsonify({"valid": False, "reason": "Clé invalide"})
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -98,14 +134,12 @@ STREAMERS = [
     "wavepunk", "achieves"
 ]
 
-# BUG 1 FIX — version state centralisé, initialisé à None pour éviter
-# les faux positifs au premier démarrage sur tous les loops
 last_roblox_version_hash: str | None = None
 last_rl_patch_title:      str | None = None
-current_rl_version:       str        = "v2.72"
-last_fn_news_title:       str | None = None
-current_fn_version:       str        = "v39.00"
-currently_live:           set[str]   = set()
+current_rl_version:        str        = "v2.72"
+last_fn_news_title:        str | None = None
+current_fn_version:        str        = "v39.00"
+currently_live:            set[str]   = set()
 
 # ==========================================
 # 3. FONCTIONS UTILITAIRES & COMMANDES SLASH
@@ -182,6 +216,61 @@ async def slash_robloxversion(interaction: discord.Interaction):
                 )
     except Exception as e:
         await interaction.response.send_message(f"❌ Erreur technique : {e}", ephemeral=True)
+
+@bot.tree.command(name="key", description="Génère une clé d'accès unique valable 24h pour le script.")
+async def slash_key(interaction: discord.Interaction):
+    cleanup_expired_keys()
+
+    user_id = str(interaction.user.id)
+    now = datetime.now(timezone.utc)
+
+    # Si l'utilisateur a déjà une key valide, on la réaffiche
+    if user_id in key_store and key_store[user_id]["expires"] > now:
+        existing = key_store[user_id]
+        remaining = existing["expires"] - now
+        hours = int(remaining.total_seconds() // 3600)
+        minutes = int((remaining.total_seconds() % 3600) // 60)
+
+        embed = discord.Embed(
+            title="🔑 Clé déjà active",
+            description=(
+                f"Tu as déjà une clé valide.\n\n"
+                f"**Ta clé :**\n```\n{existing['key']}\n```"
+            ),
+            color=discord.Color.orange()
+        )
+        embed.add_field(
+            name="⏱️ Expiration",
+            value=f"Expire dans **{hours}h {minutes}min**",
+            inline=False
+        )
+        embed.set_footer(text="L3X BOT - Système de clés")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    # Génération d'une nouvelle key
+    new_key = generate_key(20)
+    expires = now + timedelta(hours=24)
+
+    key_store[user_id] = {
+        "key": new_key,
+        "expires": expires,
+        "username": str(interaction.user)
+    }
+
+    embed = discord.Embed(
+        title="✅ Nouvelle clé générée !",
+        description=(
+            f"Ta clé d'accès unique est prête.\n\n"
+            f"**Ta clé :**\n```\n{new_key}\n```\n"
+            f"Copie-la et colle-la dans le script Roblox."
+        ),
+        color=discord.Color.green()
+    )
+    embed.add_field(name="⏱️ Durée de validité", value="**24 heures** à partir de maintenant", inline=False)
+    embed.add_field(name="⚠️ Important", value="Cette clé est personnelle. Ne la partage pas.", inline=False)
+    embed.set_footer(text="L3X BOT - Système de clés")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ==========================================
 # 4. MODULE ANIME-SAMA (/animesama)
@@ -310,8 +399,6 @@ async def check_fortnite_updates():
             body  = (motd.get("body")  or "").strip()
             image = motd.get("image")
 
-            # BUG 2 FIX — version regex cherchait dans title+body mais motd["title"]
-            # peut être vide ; on inspecte aussi la clé "tabTitle" et "image" URL
             tab_title = motd.get("tabTitle", "")
             version_source = f"{title} {body} {tab_title}"
             match = re.search(r'v\d+\.\d+', version_source, re.IGNORECASE)
@@ -389,8 +476,6 @@ async def get_twitch_token() -> str | None:
         if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
             return None
 
-        # BUG 3 FIX — token expiry guard : on renouvelle 60s avant expiration
-        # plutôt qu'attendre un 401 en prod
         if twitch_access_token and time_module.monotonic() < bot._twitch_token_expiry - 60:
             return twitch_access_token
 
@@ -430,8 +515,6 @@ async def check_twitch_streams():
     chunk_size = 100
     streamer_chunks = [STREAMERS[i:i + chunk_size] for i in range(0, len(STREAMERS), chunk_size)]
 
-    # BUG 4 FIX — active_live_this_check doit couvrir TOUS les chunks avant
-    # de purger currently_live ; si un chunk échoue on ne purge pas
     active_live_this_check: set[str] = set()
     all_chunks_ok = True
 
@@ -444,8 +527,6 @@ async def check_twitch_streams():
                 params=params,
                 timeout=aiohttp.ClientTimeout(total=15)
             ) as resp:
-                # BUG 5 FIX — 401 mid-loop renouvelle le token et relance
-                # le chunk plutôt que de l'abandonner silencieusement
                 if resp.status == 401:
                     token = await get_twitch_token()
                     if not token:
@@ -519,8 +600,6 @@ async def check_twitch_streams():
                 embed=embed,
             )
 
-    # BUG 6 FIX — purge uniquement si tous les chunks ont répondu correctement
-    # Évite de vider currently_live sur une erreur réseau partielle
     if all_chunks_ok:
         currently_live.intersection_update(active_live_this_check)
 
