@@ -1,44 +1,68 @@
-import os
-import asyncio
-from flask import Flask, request, jsonify
-from threading import Thread
-import discord
-from discord.ext import commands, tasks
-from discord import app_commands
-import aiohttp
-from datetime import time, timezone, datetime, timedelta
+# --- bot.py ---
+import os, json, asyncio, re, string, secrets, urllib.parse, time as time_module
 import xml.etree.ElementTree as ET
-import re
-import urllib.parse
-import time as time_module
-import secrets
-import string
+from threading import Thread
+from datetime import datetime, timedelta, timezone, time
 
-# ==========================================
-# 1. SERVEUR FLASK POUR RENDER (KEEP ALIVE)
-# ==========================================
-app = Flask('')
+import aiohttp
+import discord
+from discord import app_commands
+from discord.ext import commands, tasks
+from flask import Flask, request, jsonify
 
-# Stockage en mémoire des keys (dict user_id → {key, expires, username})
-key_store: dict[str, dict] = {}
+# ══════════════════════════════════════════════════════════════════
+# 0. PERSISTANCE CLÉ
+# ══════════════════════════════════════════════════════════════════
+KEY_STORE_FILE = "key_store.json"
+
+def _load_store() -> dict:
+    try:
+        with open(KEY_STORE_FILE, "r") as f:
+            raw = json.load(f)
+        for uid, data in raw.items():
+            data["expires"] = datetime.fromisoformat(data["expires"])
+        return raw
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
+        return {}
+
+def _save_store(store: dict) -> None:
+    serializable = {
+        uid: {
+            "key":      d["key"],
+            "expires":  d["expires"].isoformat(),
+            "username": d["username"],
+        }
+        for uid, d in store.items()
+    }
+    with open(KEY_STORE_FILE, "w") as f:
+        json.dump(serializable, f, indent=2)
+
+key_store: dict[str, dict] = _load_store()
 
 def generate_key(length: int = 20) -> str:
     alphabet = string.ascii_letters + string.digits
-    return ''.join(secrets.choice(alphabet) for _ in range(length))
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
-def cleanup_expired_keys():
-    now = datetime.now(timezone.utc)
-    expired = [uid for uid, data in key_store.items() if data["expires"] < now]
+def cleanup_expired_keys() -> None:
+    now     = datetime.now(timezone.utc)
+    expired = [uid for uid, d in key_store.items() if d["expires"] < now]
     for uid in expired:
         del key_store[uid]
+    if expired:
+        _save_store(key_store)
 
-@app.route('/')
+# ══════════════════════════════════════════════════════════════════
+# 1. FLASK — KEEP-ALIVE + VALIDATION
+# ══════════════════════════════════════════════════════════════════
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
 def home():
-    return "🚀 L3X BOT est en ligne et opérationnel !"
+    return "🚀 L3X BOT opérationnel."
 
-@app.route('/validate_key', methods=['GET'])
+@flask_app.route("/validate_key", methods=["GET"])
 def validate_key():
-    key = request.args.get('key', '').strip()
+    key = request.args.get("key", "").strip()
     if not key:
         return jsonify({"valid": False, "reason": "Aucune clé fournie"}), 400
 
@@ -48,28 +72,61 @@ def validate_key():
             if data["expires"] > now:
                 remaining = data["expires"] - now
                 return jsonify({
-                    "valid": True,
-                    "user": data["username"],
-                    "expires_in_seconds": int(remaining.total_seconds())
+                    "valid":             True,
+                    "user":              data["username"],
+                    "expires_in_seconds": int(remaining.total_seconds()),
                 })
-            else:
-                return jsonify({"valid": False, "reason": "Clé expirée"})
+            return jsonify({"valid": False, "reason": "Clé expirée"})
 
     return jsonify({"valid": False, "reason": "Clé invalide"})
 
-def run():
+@flask_app.route("/health")
+def health():
+    return jsonify({"status": "ok", "keys_active": len(key_store)})
+
+def _run_flask() -> None:
     port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    flask_app.run(host="0.0.0.0", port=port)
 
-def keep_alive():
-    t = Thread(target=run, daemon=True)
-    t.start()
+Thread(target=_run_flask, daemon=True).start()
 
-keep_alive()
+# ══════════════════════════════════════════════════════════════════
+# 2. CONFIG DISCORD
+# ══════════════════════════════════════════════════════════════════
+DISCORD_INVITE = "https://discord.gg/764AW7aSKS"
 
-# ==========================================
-# 2. CONFIGURATION DU BOT DISCORD
-# ==========================================
+ROBLOX_CHANNEL_ID     = int(os.getenv("ROBLOX_CHANNEL_ID",     1534679583947886594))
+TWITCH_CHANNEL_ID     = int(os.getenv("TWITCH_CHANNEL_ID",     1517233263293497384))
+RL_SHOP_CHANNEL_ID    = int(os.getenv("RL_SHOP_CHANNEL_ID",    1515508545418952734))
+RL_UPDATES_CHANNEL_ID = int(os.getenv("RL_UPDATES_CHANNEL_ID", 1534708870352732241))
+FN_UPDATES_CHANNEL_ID = int(os.getenv("FN_UPDATES_CHANNEL_ID", 1534724078584336384))
+
+TWITCH_CLIENT_ID     = os.getenv("TWITCH_CLIENT_ID")
+TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
+
+STREAMERS = [
+    "mawkzy_","rocketbaguette","fuury_off","atowwwww","kaydop","vatira",
+    "zenrll","alpha54","chausette45","fairy_peak","extra","saizen","radosin",
+    "juicy","seikoo","monkeymoon","itachi","aztral","ferra","eversax",
+    "exotiik","dralii","lecheps","payriixx","poachimpa","kaokor","rasmelthor",
+    "shogunfr","yukeofr","rocketleague","squishymuffinz","lethamyr","apparentlyjack",
+    "retals","arsenal","garrettg","ayyjayy","jstn","daniel","beastmode","comm",
+    "firstkiller","chronic","lj","mist","cheese","hockser","percy","chicago",
+    "rizzo","athena","jonsandman","sunlesskhan","musty","cbell","thanovic",
+    "wayton","chiefbeef_rl","evample","frontalpanda","pulsemk","pulsetemple",
+    "hivise","cbellrl","woody","spookluke","virge","gibbs","johnnyboi_i",
+    "dazerin","corelli","turtle","stumpy","cole","jannlpzz","rosdri_twitch",
+    "stake","crr","atomik","dorito","marc_by_8","rezears","kairiu","tox",
+    "trk511__","rw9","kiileerrz","nwpo","ahmad","okhali_d","venom","smw",
+    "m7sn","t7lm","catalysm","nass","oaly","oski","joreuz","rise","archie",
+    "scrubkilla","yukeo","yanxnz","lostt","kv1","motta","aztromick","caard",
+    "math","droppz","muiricle","henkovic","jzr","ganer","kuxir97","maktuf",
+    "wavepunk","achieves",
+]
+
+# ══════════════════════════════════════════════════════════════════
+# 3. BOT
+# ══════════════════════════════════════════════════════════════════
 intents = discord.Intents.default()
 intents.message_content = True
 
@@ -77,7 +134,9 @@ class L3XBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
         self.session: aiohttp.ClientSession | None = None
+        self._twitch_token: str | None = None
         self._twitch_token_expiry: float = 0.0
+        self._token_lock = asyncio.Lock()
 
     async def setup_hook(self):
         self.session = aiohttp.ClientSession()
@@ -93,228 +152,244 @@ class L3XBot(commands.Bot):
         await super().close()
 
     async def on_ready(self):
-        print(f"✅ Connecté avec succès en tant que : {self.user} (ID: {self.user.id})")
+        print(f"✅ {self.user} connecté (ID: {self.user.id})")
         try:
             synced = await self.tree.sync()
-            print(f"🔄 Commandes Slash synchronisées avec succès : {len(synced)}")
+            print(f"🔄 {len(synced)} commandes slash synchronisées")
         except Exception as e:
-            print(f"❌ Erreur lors de la synchronisation des commandes : {e}")
+            print(f"❌ Sync slash : {e}")
 
 bot = L3XBot()
 
-# IDs des salons Discord
-ROBLOX_CHANNEL_ID     = int(os.getenv("ROBLOX_CHANNEL_ID",     1534679583947886594))
-TWITCH_CHANNEL_ID     = int(os.getenv("TWITCH_CHANNEL_ID",     1517233263293497384))
-RL_SHOP_CHANNEL_ID    = int(os.getenv("RL_SHOP_CHANNEL_ID",    1515508545418952734))
-RL_UPDATES_CHANNEL_ID = int(os.getenv("RL_UPDATES_CHANNEL_ID", 1534708870352732241))
-FN_UPDATES_CHANNEL_ID = int(os.getenv("FN_UPDATES_CHANNEL_ID", 1534724078584336384))
-
-TWITCH_CLIENT_ID     = os.getenv("TWITCH_CLIENT_ID")
-TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
-twitch_access_token: str | None = None
-_token_lock = asyncio.Lock()
-
-STREAMERS = [
-    "mawkzy_", "rocketbaguette", "fuury_off", "atowwwww", "kaydop", "vatira",
-    "zenrll", "alpha54", "chausette45", "fairy_peak", "extra", "saizen", "radosin",
-    "juicy", "seikoo", "monkeymoon", "itachi", "aztral", "ferra", "eversax",
-    "exotiik", "dralii", "lecheps", "payriixx", "poachimpa", "kaokor", "rasmelthor",
-    "shogunfr", "yukeofr", "rocketleague", "squishymuffinz", "lethamyr", "apparentlyjack",
-    "retals", "arsenal", "garrettg", "ayyjayy", "jstn", "daniel", "beastmode", "comm",
-    "firstkiller", "chronic", "lj", "mist", "cheese", "hockser", "percy", "chicago",
-    "rizzo", "athena", "jonsandman", "sunlesskhan", "musty", "cbell", "thanovic",
-    "wayton", "chiefbeef_rl", "evample", "frontalpanda", "pulsemk", "pulsetemple",
-    "hivise", "cbellrl", "woody", "spookluke", "virge", "gibbs", "johnnyboi_i",
-    "dazerin", "corelli", "turtle", "stumpy", "cole", "jannlpzz", "rosdri_twitch",
-    "stake", "crr", "atomik", "dorito", "marc_by_8", "rezears", "kairiu", "tox",
-    "trk511__", "rw9", "kiileerrz", "nwpo", "ahmad", "okhali_d", "venom", "smw",
-    "m7sn", "t7lm", "catalysm", "nass", "oaly", "oski", "joreuz", "rise", "archie",
-    "scrubkilla", "yukeo", "yanxnz", "lostt", "kv1", "motta", "aztromick", "caard",
-    "math", "droppz", "muiricle", "henkovic", "jzr", "ganer", "kuxir97", "maktuf",
-    "wavepunk", "achieves"
-]
-
+# ══════════════════════════════════════════════════════════════════
+# 4. ÉTAT GLOBAL
+# ══════════════════════════════════════════════════════════════════
 last_roblox_version_hash: str | None = None
 last_rl_patch_title:      str | None = None
-current_rl_version:        str        = "v2.72"
-last_fn_news_title:        str | None = None
-current_fn_version:        str        = "v39.00"
-currently_live:            set[str]   = set()
+current_rl_version:       str        = "v2.72"
+last_fn_news_title:       str | None = None
+current_fn_version:       str        = "v39.00"
+currently_live:           set[str]   = set()
 
-# ==========================================
-# 3. FONCTIONS UTILITAIRES & COMMANDES SLASH
-# ==========================================
+# ══════════════════════════════════════════════════════════════════
+# 5. HELPERS
+# ══════════════════════════════════════════════════════════════════
+async def get_twitch_token() -> str | None:
+    async with bot._token_lock:
+        if bot._twitch_token and time_module.monotonic() < bot._twitch_token_expiry - 60:
+            return bot._twitch_token
+        if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
+            return None
+        try:
+            async with bot.session.post(
+                "https://id.twitch.tv/oauth2/token",
+                params={
+                    "client_id":     TWITCH_CLIENT_ID,
+                    "client_secret": TWITCH_CLIENT_SECRET,
+                    "grant_type":    "client_credentials",
+                },
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    bot._twitch_token         = data["access_token"]
+                    bot._twitch_token_expiry  = time_module.monotonic() + data.get("expires_in", 3600)
+                    return bot._twitch_token
+                print(f"Token Twitch HTTP {resp.status}")
+        except Exception as e:
+            print(f"Token Twitch erreur : {e}")
+    return None
 
-async def send_rl_shop(target_channel: discord.TextChannel) -> None:
-    if not target_channel:
-        return
+async def send_rl_shop(channel: discord.TextChannel) -> None:
     embed = discord.Embed(
         title="🛒 BOUTIQUE ROCKET LEAGUE",
         description=(
-            "La rotation quotidienne de la boutique est en ligne en jeu !\n\n"
-            "*Pense à lancer Rocket League pour découvrir les nouveautés du jour.*"
+            "La rotation quotidienne est en ligne en jeu !\n\n"
+            "*Lance Rocket League pour découvrir les nouveautés.*"
         ),
-        color=discord.Color.blue()
+        color=discord.Color.blue(),
     )
     embed.add_field(name="🔄 Rotation", value="Actualisation quotidienne automatique", inline=False)
-    embed.set_footer(text="L3X BOT - Alertes Rocket League")
-    await target_channel.send(embed=embed)
+    embed.set_footer(text="L3X BOT — Alertes Rocket League")
+    await channel.send(embed=embed)
 
-@bot.tree.command(name="shoprl", description="[ADMIN] Force l'affichage de la boutique Rocket League.")
-@app_commands.checks.has_permissions(administrator=True)
-async def slash_shoprl(interaction: discord.Interaction):
-    await send_rl_shop(interaction.channel)
-    await interaction.response.send_message("✅ Message de la boutique envoyé avec succès !", ephemeral=True)
+# ══════════════════════════════════════════════════════════════════
+# 6. COMMANDES SLASH
+# ══════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="versionrl", description="Affiche la version actuelle et les patch notes de Rocket League.")
-async def slash_versionrl(interaction: discord.Interaction):
-    patch_url = "https://www.rocketleague.com/news/tag/patch-notes"
-    embed = discord.Embed(
-        title="🎮 PATCH NOTES & VERSIONS ROCKET LEAGUE",
-        description=(
-            f"Version actuelle du jeu : **{current_rl_version}**\n\n"
-            f"Consulte les dernières notes de mise à jour officielles :\n\n"
-            f"👉 **[Clique ici pour voir les Patch Notes]({patch_url})**"
-        ),
-        color=discord.Color.orange()
-    )
-    embed.set_footer(text=f"Demandé par {interaction.user.name} - L3X BOT")
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="versionfn", description="Affiche les actualités et versions du jeu Fortnite.")
-async def slash_versionfn(interaction: discord.Interaction):
-    fn_url = "https://www.fortnite.com/news"
-    embed = discord.Embed(
-        title="🌀 ACTUALITÉS & VERSIONS FORTNITE",
-        description=(
-            f"Version / mise à jour récente du jeu : **{current_fn_version}**\n\n"
-            f"Consulte les dernières annonces officielles :\n\n"
-            f"👉 **[Clique ici pour voir les actualités Fortnite]({fn_url})**"
-        ),
-        color=discord.Color.purple()
-    )
-    embed.set_footer(text=f"Demandé par {interaction.user.name} - L3X BOT")
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="robloxversion", description="Donne la version officielle actuelle de Roblox.")
-async def slash_robloxversion(interaction: discord.Interaction):
-    url = "https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer"
-    try:
-        async with bot.session.get(url) as response:
-            if response.status == 200:
-                data = await response.json()
-                version_hash = data.get("clientVersionUpload", "Inconnue")
-                embed = discord.Embed(
-                    description=f"🎮 **Version actuelle de Roblox**\n\nLa version officielle actuelle est : `{version_hash}`",
-                    color=discord.Color.blue()
-                )
-                await interaction.response.send_message(embed=embed)
-            else:
-                await interaction.response.send_message(
-                    f"❌ Impossible de récupérer la version actuelle de Roblox (HTTP {response.status}).",
-                    ephemeral=True
-                )
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Erreur technique : {e}", ephemeral=True)
-
-@bot.tree.command(name="key", description="Génère une clé d'accès unique valable 24h pour le script.")
+# ── /key ──────────────────────────────────────────────────────────
+@bot.tree.command(name="key", description="Génère une clé d'accès unique valable 24h.")
 async def slash_key(interaction: discord.Interaction):
     cleanup_expired_keys()
-
     user_id = str(interaction.user.id)
-    now = datetime.now(timezone.utc)
+    now     = datetime.now(timezone.utc)
 
-    # Si l'utilisateur a déjà une key valide, on la réaffiche
     if user_id in key_store and key_store[user_id]["expires"] > now:
-        existing = key_store[user_id]
+        existing  = key_store[user_id]
         remaining = existing["expires"] - now
-        hours = int(remaining.total_seconds() // 3600)
-        minutes = int((remaining.total_seconds() % 3600) // 60)
-
+        hours     = int(remaining.total_seconds() // 3600)
+        minutes   = int((remaining.total_seconds() % 3600) // 60)
         embed = discord.Embed(
             title="🔑 Clé déjà active",
-            description=(
-                f"Tu as déjà une clé valide.\n\n"
-                f"**Ta clé :**\n```\n{existing['key']}\n```"
-            ),
-            color=discord.Color.orange()
+            description=f"Tu as déjà une clé valide.\n\n**Ta clé :**\n```\n{existing['key']}\n```",
+            color=discord.Color.orange(),
         )
-        embed.add_field(
-            name="⏱️ Expiration",
-            value=f"Expire dans **{hours}h {minutes}min**",
-            inline=False
-        )
-        embed.set_footer(text="L3X BOT - Système de clés")
+        embed.add_field(name="⏱️ Expiration", value=f"Expire dans **{hours}h {minutes}min**", inline=False)
+        embed.set_footer(text="L3X BOT — Système de clés")
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
 
-    # Génération d'une nouvelle key
     new_key = generate_key(20)
     expires = now + timedelta(hours=24)
-
-    key_store[user_id] = {
-        "key": new_key,
-        "expires": expires,
-        "username": str(interaction.user)
-    }
+    key_store[user_id] = {"key": new_key, "expires": expires, "username": str(interaction.user)}
+    _save_store(key_store)
 
     embed = discord.Embed(
         title="✅ Nouvelle clé générée !",
         description=(
-            f"Ta clé d'accès unique est prête.\n\n"
             f"**Ta clé :**\n```\n{new_key}\n```\n"
-            f"Copie-la et colle-la dans le script Roblox."
+            "Copie-la et colle-la dans le script Roblox."
         ),
-        color=discord.Color.green()
+        color=discord.Color.green(),
     )
-    embed.add_field(name="⏱️ Durée de validité", value="**24 heures** à partir de maintenant", inline=False)
-    embed.add_field(name="⚠️ Important", value="Cette clé est personnelle. Ne la partage pas.", inline=False)
-    embed.set_footer(text="L3X BOT - Système de clés")
+    embed.add_field(name="⏱️ Durée", value="**24 heures**", inline=False)
+    embed.add_field(name="⚠️ Important", value="Clé personnelle — ne pas partager.", inline=False)
+    embed.set_footer(text="L3X BOT — Système de clés")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ==========================================
-# 4. MODULE ANIME-SAMA (/animesama)
-# ==========================================
+# ── /shoprl ───────────────────────────────────────────────────────
+@bot.tree.command(name="shoprl", description="[ADMIN] Force l'affichage de la boutique Rocket League.")
+@app_commands.checks.has_permissions(administrator=True)
+async def slash_shoprl(interaction: discord.Interaction):
+    await send_rl_shop(interaction.channel)
+    await interaction.response.send_message("✅ Boutique envoyée.", ephemeral=True)
+
+# ── /versionrl ────────────────────────────────────────────────────
+@bot.tree.command(name="versionrl", description="Affiche la version actuelle et les patch notes de Rocket League.")
+async def slash_versionrl(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🎮 PATCH NOTES & VERSIONS ROCKET LEAGUE",
+        description=(
+            f"Version actuelle : **{current_rl_version}**\n\n"
+            "👉 **[Patch Notes officiels](https://www.rocketleague.com/news/tag/patch-notes)**"
+        ),
+        color=discord.Color.orange(),
+    )
+    embed.set_footer(text=f"Demandé par {interaction.user.name} — L3X BOT")
+    await interaction.response.send_message(embed=embed)
+
+# ── /versionfn ────────────────────────────────────────────────────
+@bot.tree.command(name="versionfn", description="Affiche les actualités et version de Fortnite.")
+async def slash_versionfn(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🌀 ACTUALITÉS & VERSIONS FORTNITE",
+        description=(
+            f"Version récente : **{current_fn_version}**\n\n"
+            "👉 **[Actualités officielles Fortnite](https://www.fortnite.com/news)**"
+        ),
+        color=discord.Color.purple(),
+    )
+    embed.set_footer(text=f"Demandé par {interaction.user.name} — L3X BOT")
+    await interaction.response.send_message(embed=embed)
+
+# ── /robloxversion ────────────────────────────────────────────────
+@bot.tree.command(name="robloxversion", description="Donne la version officielle actuelle de Roblox.")
+async def slash_robloxversion(interaction: discord.Interaction):
+    url = "https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer"
+    try:
+        async with bot.session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status == 200:
+                data    = await resp.json()
+                version = data.get("clientVersionUpload", "Inconnue")
+                embed   = discord.Embed(
+                    description=f"🎮 **Version actuelle de Roblox**\n\n`{version}`",
+                    color=discord.Color.blue(),
+                )
+                await interaction.response.send_message(embed=embed)
+            else:
+                await interaction.response.send_message(
+                    f"❌ HTTP {resp.status}", ephemeral=True
+                )
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Erreur : {e}", ephemeral=True)
+
+# ── /animesama ────────────────────────────────────────────────────
 class AnimeView(discord.ui.View):
     def __init__(self, anime_name: str):
         super().__init__(timeout=180)
-        query = urllib.parse.quote(anime_name, safe='')
-        url = f"https://anime-sama.to/catalogue/?search={query}"
+        query = urllib.parse.quote(anime_name, safe="")
         self.add_item(discord.ui.Button(
-            label="📺 Lancer la recherche sur Anime-Sama",
+            label="📺 Rechercher sur Anime-Sama",
             style=discord.ButtonStyle.link,
-            url=url
+            url=f"https://anime-sama.to/catalogue/?search={query}",
         ))
 
-@bot.tree.command(name="animesama", description="Recherche un animé sur Anime-Sama de façon privée.")
-@app_commands.describe(nom="Nom de l'animé à rechercher (tolère les petites fautes)")
-async def animesama(interaction: discord.Interaction, nom: str):
+@bot.tree.command(name="animesama", description="Recherche un animé sur Anime-Sama.")
+@app_commands.describe(nom="Nom de l'animé")
+async def slash_animesama(interaction: discord.Interaction, nom: str):
     embed = discord.Embed(
         title="🌸 Recherche Anime-Sama",
-        description=f"Résultat de la recherche pour : **{nom}**",
-        color=discord.Color.from_rgb(255, 105, 180)
+        description=f"Résultat pour : **{nom}**",
+        color=discord.Color.from_rgb(255, 105, 180),
     )
-    embed.add_field(
-        name="💡 Astuce",
-        value="Clique sur le bouton ci-dessous pour ouvrir la recherche directement sur le site en privé.",
-        inline=False
-    )
-    embed.set_footer(text="L3X BOT - Streaming Anime")
+    embed.add_field(name="💡 Astuce", value="Clique pour ouvrir la recherche en privé.", inline=False)
+    embed.set_footer(text="L3X BOT — Streaming Anime")
     await interaction.response.send_message(embed=embed, view=AnimeView(nom), ephemeral=True)
 
+# ── /keys (admin — liste toutes les clés actives) ─────────────────
+@bot.tree.command(name="keys", description="[ADMIN] Liste toutes les clés actives.")
+@app_commands.checks.has_permissions(administrator=True)
+async def slash_keys(interaction: discord.Interaction):
+    cleanup_expired_keys()
+    now = datetime.now(timezone.utc)
+    if not key_store:
+        await interaction.response.send_message("Aucune clé active.", ephemeral=True)
+        return
+
+    lines = []
+    for uid, data in key_store.items():
+        remaining = data["expires"] - now
+        h = int(remaining.total_seconds() // 3600)
+        m = int((remaining.total_seconds() % 3600) // 60)
+        lines.append(f"`{data['key']}` — {data['username']} — expire dans {h}h{m}m")
+
+    embed = discord.Embed(
+        title=f"🔑 {len(key_store)} clé(s) active(s)",
+        description="\n".join(lines),
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text="L3X BOT — Admin")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ── /revokekey (admin) ────────────────────────────────────────────
+@bot.tree.command(name="revokekey", description="[ADMIN] Révoque la clé d'un utilisateur.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(user="L'utilisateur dont révoquer la clé")
+async def slash_revokekey(interaction: discord.Interaction, user: discord.Member):
+    uid = str(user.id)
+    if uid in key_store:
+        del key_store[uid]
+        _save_store(key_store)
+        await interaction.response.send_message(f"✅ Clé de {user} révoquée.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"❌ {user} n'a pas de clé active.", ephemeral=True)
+
+# ── Gestion erreurs slash ──────────────────────────────────────────
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    msg = "❌ Tu n'as pas les permissions nécessaires pour exécuter cette commande." \
-          if isinstance(error, app_commands.MissingPermissions) \
-          else f"❌ Erreur inattendue : {error}"
+    msg = (
+        "❌ Permissions insuffisantes."
+        if isinstance(error, app_commands.MissingPermissions)
+        else f"❌ Erreur : {error}"
+    )
     if not interaction.response.is_done():
         await interaction.response.send_message(msg, ephemeral=True)
     else:
         await interaction.followup.send(msg, ephemeral=True)
 
-# ==========================================
-# 5. TÂCHES AUTOMATIQUES DE FOND (LOOPS)
-# ==========================================
+# ══════════════════════════════════════════════════════════════════
+# 7. LOOPS AUTOMATIQUES
+# ══════════════════════════════════════════════════════════════════
 
 @tasks.loop(time=time(hour=20, minute=0, tzinfo=timezone.utc))
 async def daily_rl_shop():
@@ -325,265 +400,214 @@ async def daily_rl_shop():
 @tasks.loop(minutes=5)
 async def check_rocket_league_patches():
     global last_rl_patch_title, current_rl_version
-    rss_url = "https://www.rocketleague.com/news/rss/"
     try:
-        async with bot.session.get(rss_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-            if response.status != 200:
+        async with bot.session.get(
+            "https://www.rocketleague.com/news/rss/",
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status != 200:
                 return
-            xml_content = await response.text()
-            root = ET.fromstring(xml_content)
+            root = ET.fromstring(await resp.text())
 
-            for item in root.findall(".//item"):
-                title_el = item.find("title")
-                link_el  = item.find("link")
-                if title_el is None or link_el is None:
-                    continue
-                title = (title_el.text or "").strip()
-                link  = (link_el.text  or "").strip()
+        for item in root.findall(".//item"):
+            title_el = item.find("title")
+            link_el  = item.find("link")
+            if title_el is None or link_el is None:
+                continue
+            title = (title_el.text or "").strip()
+            link  = (link_el.text  or "").strip()
+            if not any(k in title.lower() for k in ("patch", "v2.", "update")):
+                continue
 
-                if not ("patch" in title.lower() or "v2." in title.lower() or "update" in title.lower()):
-                    continue
+            match = re.search(r"v2\.\d+", title, re.IGNORECASE)
+            if match:
+                current_rl_version = match.group(0)
 
-                match = re.search(r'v2\.\d+', title, re.IGNORECASE)
-                if match:
-                    current_rl_version = match.group(0)
-
-                if last_rl_patch_title is None:
-                    last_rl_patch_title = title
-                    return
-
-                if title == last_rl_patch_title:
-                    return
-
+            if last_rl_patch_title is None:
                 last_rl_patch_title = title
-                channel = bot.get_channel(RL_UPDATES_CHANNEL_ID)
-                if not channel:
-                    return
-
-                embed = discord.Embed(
-                    title=f"🚀 NOUVELLE VERSION ({current_rl_version}) ROCKET LEAGUE !",
-                    description=f"**{title}**",
-                    url=link,
-                    color=discord.Color.orange()
-                )
-                embed.add_field(name="Lien officiel", value=link, inline=False)
-                embed.set_footer(text="Alerte automatique - L3X BOT")
-                await channel.send(content="@everyone", embed=embed)
                 return
+            if title == last_rl_patch_title:
+                return
+
+            last_rl_patch_title = title
+            channel = bot.get_channel(RL_UPDATES_CHANNEL_ID)
+            if not channel:
+                return
+
+            embed = discord.Embed(
+                title=f"🚀 NOUVELLE VERSION ({current_rl_version}) ROCKET LEAGUE !",
+                description=f"**{title}**",
+                url=link,
+                color=discord.Color.orange(),
+            )
+            embed.add_field(name="Lien officiel", value=link, inline=False)
+            embed.set_footer(text="Alerte automatique — L3X BOT")
+            await channel.send(content="@everyone", embed=embed)
+            return
 
     except asyncio.TimeoutError:
-        print("Timeout vérification patch Rocket League")
+        print("Timeout patch RL")
     except ET.ParseError as e:
-        print(f"XML malformé Rocket League RSS : {e}")
+        print(f"XML malformé RL RSS : {e}")
     except Exception as e:
-        print(f"Erreur vérification patch Rocket League : {e}")
+        print(f"Erreur patch RL : {e}")
 
 @tasks.loop(minutes=10)
 async def check_fortnite_updates():
     global last_fn_news_title, current_fn_version
-    fn_api_url = "https://fortnite-api.com/v2/news/br"
     try:
-        async with bot.session.get(fn_api_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-            if response.status != 200:
+        async with bot.session.get(
+            "https://fortnite-api.com/v2/news/br",
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status != 200:
                 return
-            data = await response.json()
-            if data.get("status") != 200:
-                return
+            data = await resp.json()
 
-            motds = data.get("data", {}).get("motds", [])
-            if not motds:
-                return
+        if data.get("status") != 200:
+            return
+        motds = data.get("data", {}).get("motds", [])
+        if not motds:
+            return
 
-            motd  = motds[0]
-            title = (motd.get("title") or "").strip()
-            body  = (motd.get("body")  or "").strip()
-            image = motd.get("image")
+        motd  = motds[0]
+        title = (motd.get("title") or "").strip()
+        body  = (motd.get("body")  or "").strip()
+        image = motd.get("image")
 
-            tab_title = motd.get("tabTitle", "")
-            version_source = f"{title} {body} {tab_title}"
-            match = re.search(r'v\d+\.\d+', version_source, re.IGNORECASE)
-            if match:
-                current_fn_version = match.group(0)
+        match = re.search(r"v\d+\.\d+", f"{title} {body} {motd.get('tabTitle','')}", re.IGNORECASE)
+        if match:
+            current_fn_version = match.group(0)
 
-            if last_fn_news_title is None:
-                last_fn_news_title = title
-                return
-
-            if title == last_fn_news_title:
-                return
-
+        if last_fn_news_title is None:
             last_fn_news_title = title
-            channel = bot.get_channel(FN_UPDATES_CHANNEL_ID)
-            if not channel:
-                return
+            return
+        if title == last_fn_news_title:
+            return
 
-            embed = discord.Embed(
-                title="🌀 NOUVELLE ACTUALITÉ / MISE À JOUR FORTNITE !",
-                description=f"**{title}**\n\n{body}",
-                color=discord.Color.purple()
-            )
-            if image:
-                embed.set_image(url=image)
-            embed.add_field(name="Version détectée", value=current_fn_version, inline=False)
-            embed.set_footer(text="Alerte Fortnite automatique - L3X BOT")
-            await channel.send(content="@everyone", embed=embed)
+        last_fn_news_title = title
+        channel = bot.get_channel(FN_UPDATES_CHANNEL_ID)
+        if not channel:
+            return
+
+        embed = discord.Embed(
+            title="🌀 NOUVELLE ACTUALITÉ / MISE À JOUR FORTNITE !",
+            description=f"**{title}**\n\n{body}",
+            color=discord.Color.purple(),
+        )
+        if image:
+            embed.set_image(url=image)
+        embed.add_field(name="Version détectée", value=current_fn_version, inline=False)
+        embed.set_footer(text="Alerte Fortnite — L3X BOT")
+        await channel.send(content="@everyone", embed=embed)
 
     except asyncio.TimeoutError:
-        print("Timeout vérification actualités Fortnite")
+        print("Timeout Fortnite")
     except Exception as e:
-        print(f"Erreur vérification actualités Fortnite : {e}")
+        print(f"Erreur Fortnite : {e}")
 
 @tasks.loop(minutes=5)
 async def check_roblox_update():
     global last_roblox_version_hash
-    url = "https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer"
     try:
-        async with bot.session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-            if response.status != 200:
+        async with bot.session.get(
+            "https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer",
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status != 200:
                 return
-            data = await response.json()
-            version_hash = data.get("clientVersionUpload", "").lower()
-            if not version_hash:
-                return
+            data = await resp.json()
 
-            if last_roblox_version_hash is None:
-                last_roblox_version_hash = version_hash
-                return
-
-            if version_hash == last_roblox_version_hash:
-                return
-
+        version_hash = data.get("clientVersionUpload", "").lower()
+        if not version_hash:
+            return
+        if last_roblox_version_hash is None:
             last_roblox_version_hash = version_hash
-            channel = bot.get_channel(ROBLOX_CHANNEL_ID)
-            if not channel:
-                return
+            return
+        if version_hash == last_roblox_version_hash:
+            return
 
-            embed = discord.Embed(
-                description=f"🎮 **Nouvelle version de Roblox déployée !**\n\nLa nouvelle version officielle est : `{version_hash}`",
-                color=discord.Color.blue()
-            )
-            embed.set_footer(text="Alerte Roblox automatique - L3X BOT")
-            await channel.send(content="@everyone", embed=embed)
+        last_roblox_version_hash = version_hash
+        channel = bot.get_channel(ROBLOX_CHANNEL_ID)
+        if not channel:
+            return
+
+        embed = discord.Embed(
+            description=f"🎮 **Nouvelle version Roblox déployée !**\n\n`{version_hash}`",
+            color=discord.Color.blue(),
+        )
+        embed.set_footer(text="Alerte Roblox — L3X BOT")
+        await channel.send(content="@everyone", embed=embed)
 
     except asyncio.TimeoutError:
-        print("Timeout vérification Roblox")
+        print("Timeout Roblox")
     except Exception as e:
-        print(f"Erreur vérification Roblox : {e}")
-
-async def get_twitch_token() -> str | None:
-    global twitch_access_token
-    async with _token_lock:
-        if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
-            return None
-
-        if twitch_access_token and time_module.monotonic() < bot._twitch_token_expiry - 60:
-            return twitch_access_token
-
-        url = "https://id.twitch.tv/oauth2/token"
-        params = {
-            "client_id":     TWITCH_CLIENT_ID,
-            "client_secret": TWITCH_CLIENT_SECRET,
-            "grant_type":    "client_credentials",
-        }
-        try:
-            async with bot.session.post(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    twitch_access_token      = data.get("access_token")
-                    expires_in               = data.get("expires_in", 3600)
-                    bot._twitch_token_expiry = time_module.monotonic() + expires_in
-                    return twitch_access_token
-                else:
-                    print(f"Erreur génération token Twitch : HTTP {resp.status}")
-        except Exception as e:
-            print(f"Erreur génération token Twitch : {e}")
-        return None
+        print(f"Erreur Roblox : {e}")
 
 @tasks.loop(minutes=3)
 async def check_twitch_streams():
-    global twitch_access_token
-
     token = await get_twitch_token()
     if not token:
         return
 
-    headers = {
-        "Client-ID":     TWITCH_CLIENT_ID,
-        "Authorization": f"Bearer {token}",
-    }
+    headers = {"Client-ID": TWITCH_CLIENT_ID, "Authorization": f"Bearer {token}"}
+    active_this_check: set[str] = set()
+    all_ok = True
 
-    chunk_size = 100
-    streamer_chunks = [STREAMERS[i:i + chunk_size] for i in range(0, len(STREAMERS), chunk_size)]
-
-    active_live_this_check: set[str] = set()
-    all_chunks_ok = True
-
-    for chunk in streamer_chunks:
+    for i in range(0, len(STREAMERS), 100):
+        chunk  = STREAMERS[i:i + 100]
         params = [("user_login", s) for s in chunk]
-        try:
-            async with bot.session.get(
-                "https://api.twitch.tv/helix/streams",
-                headers=headers,
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=15)
-            ) as resp:
-                if resp.status == 401:
-                    token = await get_twitch_token()
-                    if not token:
-                        all_chunks_ok = False
-                        break
-                    headers["Authorization"] = f"Bearer {token}"
-                    async with bot.session.get(
-                        "https://api.twitch.tv/helix/streams",
-                        headers=headers,
-                        params=params,
-                        timeout=aiohttp.ClientTimeout(total=15)
-                    ) as retry_resp:
-                        if retry_resp.status != 200:
-                            all_chunks_ok = False
-                            continue
-                        data    = await retry_resp.json()
-                        streams = data.get("data", [])
-                elif resp.status == 200:
-                    data    = await resp.json()
-                    streams = data.get("data", [])
-                else:
-                    print(f"Twitch streams HTTP {resp.status}")
-                    all_chunks_ok = False
-                    continue
 
-        except asyncio.TimeoutError:
-            print("Timeout vérification Twitch chunk")
-            all_chunks_ok = False
-            continue
-        except Exception as e:
-            print(f"Erreur vérification Twitch (chunk) : {e}")
-            all_chunks_ok = False
-            continue
+        for attempt in range(2):
+            try:
+                async with bot.session.get(
+                    "https://api.twitch.tv/helix/streams",
+                    headers=headers,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status == 401 and attempt == 0:
+                        token = await get_twitch_token()
+                        if not token:
+                            all_ok = False
+                            break
+                        headers["Authorization"] = f"Bearer {token}"
+                        continue
+                    if resp.status != 200:
+                        print(f"Twitch HTTP {resp.status}")
+                        all_ok = False
+                        break
+                    streams = (await resp.json()).get("data", [])
+                    break
+            except asyncio.TimeoutError:
+                print("Timeout Twitch chunk")
+                all_ok = False
+                streams = []
+                break
+            except Exception as e:
+                print(f"Erreur Twitch chunk : {e}")
+                all_ok = False
+                streams = []
+                break
 
         for stream in streams:
-            user_login: str = stream["user_login"].lower()
-            game_name:  str = stream.get("game_name", "")
-
-            if "rocket league" not in game_name.lower():
+            if "rocket league" not in stream.get("game_name", "").lower():
                 continue
-
-            active_live_this_check.add(user_login)
-
-            if user_login in currently_live:
+            login = stream["user_login"].lower()
+            active_this_check.add(login)
+            if login in currently_live:
                 continue
-
-            currently_live.add(user_login)
+            currently_live.add(login)
             channel = bot.get_channel(TWITCH_CHANNEL_ID)
             if not channel:
                 continue
 
-            stream_url = f"https://www.twitch.tv/{user_login}"
-            thumbnail  = (
+            thumb = (
                 stream["thumbnail_url"]
-                .replace("{width}",  "320")
+                .replace("{width}", "320")
                 .replace("{height}", "180")
             )
+            stream_url = f"https://www.twitch.tv/{login}"
             embed = discord.Embed(
                 title=f"🔴 {stream['user_name']} est en LIVE sur Rocket League !",
                 description=(
@@ -591,26 +615,23 @@ async def check_twitch_streams():
                     f"**Spectateurs :** 👁️ {stream['viewer_count']}"
                 ),
                 url=stream_url,
-                color=discord.Color.purple()
+                color=discord.Color.purple(),
             )
-            embed.set_thumbnail(url=thumbnail)
-            embed.add_field(name="Lien du Stream", value=stream_url, inline=False)
+            embed.set_thumbnail(url=thumb)
+            embed.add_field(name="Lien", value=stream_url, inline=False)
             await channel.send(
-                content=f"🔴 **{stream['user_name']}** est actuellement en direct !",
+                content=f"🔴 **{stream['user_name']}** est en direct !",
                 embed=embed,
             )
 
-    if all_chunks_ok:
-        currently_live.intersection_update(active_live_this_check)
+    if all_ok:
+        currently_live.intersection_update(active_this_check)
 
-# ==========================================
-# 6. DÉMARRAGE DU BOT
-# ==========================================
+# ══════════════════════════════════════════════════════════════════
+# 8. DÉMARRAGE
+# ══════════════════════════════════════════════════════════════════
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
-    raise RuntimeError(
-        "❌ Erreur critique : Aucun token Discord trouvé dans les variables "
-        "d'environnement (DISCORD_TOKEN)."
-    )
+    raise RuntimeError("❌ DISCORD_TOKEN manquant dans les variables d'environnement.")
 
 bot.run(TOKEN)
