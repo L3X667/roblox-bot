@@ -199,9 +199,8 @@ async def animesama(interaction: discord.Interaction, nom: str):
     
     await interaction.response.send_message(embed=embed, view=AnimeView(nom), ephemeral=True)
 
-# Gestionnaire d'erreurs global pour les slash commands (ex: permissions manquantes)
+# Gestionnaire d'erreurs global pour les commandes slash
 @bot.tree.error
-on_app_command_error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
         if not interaction.response.is_done():
@@ -385,7 +384,7 @@ async def check_twitch_streams():
                                 currently_live.add(user_login)
                                 channel = bot.get_channel(TWITCH_CHANNEL_ID)
                                 if channel:
-                                    stream_url = `https://www.twitch.tv/{user_login}`
+                                    stream_url = f"https://www.twitch.tv/{user_login}"
                                     embed = discord.Embed(
                                         title=f"🔴 {stream['user_name']} est en LIVE sur Rocket League !",
                                         description=f"**Titre :** {stream['title']}\n**Spectateurs :** 👁️ {stream['viewer_count']}",
