@@ -42,10 +42,8 @@ class L3XBot(commands.Bot):
         self.session = None
 
     async def setup_hook(self):
-        # Initialisation de la session HTTP globale pour de meilleures performances
         self.session = aiohttp.ClientSession()
         
-        # Démarrage des tâches de fond
         check_roblox_update.start()
         check_rocket_league_patches.start()
         check_fortnite_updates.start()
@@ -67,7 +65,7 @@ class L3XBot(commands.Bot):
 
 bot = L3XBot()
 
-# IDs des salons Discord (À adapter selon tes salons)
+# IDs des salons Discord
 ROBLOX_CHANNEL_ID = int(os.getenv("ROBLOX_CHANNEL_ID", 1534679583947886594))
 TWITCH_CHANNEL_ID = int(os.getenv("TWITCH_CHANNEL_ID", 1517233263293497384))
 RL_SHOP_CHANNEL_ID = int(os.getenv("RL_SHOP_CHANNEL_ID", 1515508545418952734))
@@ -199,7 +197,6 @@ async def animesama(interaction: discord.Interaction, nom: str):
     
     await interaction.response.send_message(embed=embed, view=AnimeView(nom), ephemeral=True)
 
-# Gestionnaire d'erreurs global pour les commandes slash
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
@@ -232,8 +229,14 @@ async def check_rocket_league_patches():
                 root = ET.fromstring(xml_content)
                 
                 for item in root.findall(".//item"):
-                    title = item.find("title").text
-                    link = item.find("link").text
+                    title_el = item.find("title")
+                    link_el = item.find("link")
+                    
+                    if title_el is None or link_el is None:
+                        continue
+                        
+                    title = title_el.text or ""
+                    link = link_el.text or ""
                     
                     if "patch" in title.lower() or "v2." in title.lower() or "update" in title.lower():
                         match = re.search(r'v2\.\d+', title, re.IGNORECASE)
@@ -307,11 +310,12 @@ async def check_roblox_update():
             if response.status == 200:
                 data = await response.json()
                 version_hash = data.get("clientVersionUpload")
+                normalized_hash = version_hash.lower() if version_hash else ""
 
                 if last_roblox_version_hash is None:
-                    last_roblox_version_hash = version_hash
-                elif version_hash != last_roblox_version_hash:
-                    last_roblox_version_hash = version_hash
+                    last_roblox_version_hash = normalized_hash
+                elif normalized_hash != last_roblox_version_hash:
+                    last_roblox_version_hash = normalized_hash
                     channel = bot.get_channel(ROBLOX_CHANNEL_ID)
                     if channel:
                         embed = discord.Embed(
@@ -366,40 +370,46 @@ async def check_twitch_streams():
             async with bot.session.get(url, headers=headers) as resp:
                 if resp.status == 401:
                     await get_twitch_token()
+                    if not twitch_access_token:
+                        break
                     headers["Authorization"] = f"Bearer {twitch_access_token}"
-                    continue
-                
-                if resp.status == 200:
+                    async with bot.session.get(url, headers=headers) as retry_resp:
+                        if retry_resp.status == 200:
+                            data = await retry_resp.json()
+                            streams = data.get("data", [])
+                        else:
+                            continue
+                elif resp.status == 200:
                     data = await resp.json()
                     streams = data.get("data", [])
+                else:
+                    continue
 
-                    for stream in streams:
-                        user_login = stream["user_login"].lower()
-                        game_name = stream.get("game_name", "")
-                        
-                        if "rocket league" in game_name.lower():
-                            active_live_this_check.add(user_login)
+                for stream in streams:
+                    user_login = stream["user_login"].lower()
+                    game_name = stream.get("game_name", "")
+                    
+                    if "rocket league" in game_name.lower():
+                        active_live_this_check.add(user_login)
 
-                            if user_login not in currently_live:
-                                currently_live.add(user_login)
-                                channel = bot.get_channel(TWITCH_CHANNEL_ID)
-                                if channel:
-                                    stream_url = f"https://www.twitch.tv/{user_login}"
-                                    embed = discord.Embed(
-                                        title=f"🔴 {stream['user_name']} est en LIVE sur Rocket League !",
-                                        description=f"**Titre :** {stream['title']}\n**Spectateurs :** 👁️ {stream['viewer_count']}",
-                                        url=stream_url,
-                                        color=discord.Color.purple()
-                                    )
-                                    embed.set_thumbnail(url=stream['thumbnail_url'].replace("{width}", "320").replace("{height}", "180"))
-                                    embed.add_field(name="Lien du Stream", value=stream_url, inline=False)
-                                    await channel.send(content=f"🔴 **{stream['user_name']}** est actuellement en direct !", embed=embed)
+                        if user_login not in currently_live:
+                            currently_live.add(user_login)
+                            channel = bot.get_channel(TWITCH_CHANNEL_ID)
+                            if channel:
+                                stream_url = f"https://www.twitch.tv/{user_login}"
+                                embed = discord.Embed(
+                                    title=f"🔴 {stream['user_name']} est en LIVE sur Rocket League !",
+                                    description=f"**Titre :** {stream['title']}\n**Spectateurs :** 👁️ {stream['viewer_count']}",
+                                    url=stream_url,
+                                    color=discord.Color.purple()
+                                )
+                                embed.set_thumbnail(url=stream['thumbnail_url'].replace("{width}", "320").replace("{height}", "180"))
+                                embed.add_field(name="Lien du Stream", value=stream_url, inline=False)
+                                await channel.send(content=f"🔴 **{stream['user_name']}** est actuellement en direct !", embed=embed)
         except Exception as e:
             print(f"Erreur vérification Twitch : {e}")
 
-    for streamer in list(currently_live):
-        if streamer not in active_live_this_check:
-            currently_live.remove(streamer)
+    currently_live.difference_update(currently_live - active_live_this_check)
 
 # ==========================================
 # 6. DÉMARRAGE DU BOT
