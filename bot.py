@@ -28,7 +28,7 @@ def _load_store() -> dict:
 def _save_store(store: dict) -> None:
     serializable = {
         uid: {
-            "key":      d["key"],
+            "key":    d["key"],
             "expires":  d["expires"].isoformat(),
             "username": d["username"],
         }
@@ -63,6 +63,8 @@ def home():
 @flask_app.route("/validate_key", methods=["GET"])
 def validate_key():
     key = request.args.get("key", "").strip()
+    print(f"[DEBUG FLASK] Requête de validation reçue pour la clé : '{key}'")
+    
     if not key:
         return jsonify({"valid": False, "reason": "Aucune clé fournie"}), 400
 
@@ -71,13 +73,16 @@ def validate_key():
         if data["key"] == key:
             if data["expires"] > now:
                 remaining = data["expires"] - now
+                print(f"[DEBUG FLASK] Succès ! Clé valide pour l'utilisateur {data['username']}")
                 return jsonify({
                     "valid":             True,
                     "user":              data["username"],
                     "expires_in_seconds": int(remaining.total_seconds()),
                 })
+            print(f"[DEBUG FLASK] Échec : Clé expirée pour {data['username']}")
             return jsonify({"valid": False, "reason": "Clé expirée"})
 
+    print(f"[DEBUG FLASK] Échec : Clé introuvable dans le key_store")
     return jsonify({"valid": False, "reason": "Clé invalide"})
 
 @flask_app.route("/health")
@@ -166,9 +171,9 @@ bot = L3XBot()
 # ══════════════════════════════════════════════════════════════════
 last_roblox_version_hash: str | None = None
 last_rl_patch_title:      str | None = None
-current_rl_version:       str        = "v2.72"
+current_rl_version:        str        = "v2.72"
 last_fn_news_title:       str | None = None
-current_fn_version:       str        = "v39.00"
+current_fn_version:        str        = "v39.00"
 currently_live:           set[str]   = set()
 
 # ══════════════════════════════════════════════════════════════════
@@ -243,6 +248,9 @@ async def slash_key(interaction: discord.Interaction):
     expires = now + timedelta(hours=24)
     key_store[user_id] = {"key": new_key, "expires": expires, "username": str(interaction.user)}
     _save_store(key_store)
+
+    # AJOUT DU PRINT POUR VOIR LA CLE DIRECTEMENT DANS LES LOGS RENDER
+    print(f"🔑 [NOUVELLE CLÉ] Utilisateur : {interaction.user} (ID: {user_id}) | Clé : {new_key}")
 
     embed = discord.Embed(
         title="✅ Nouvelle clé générée !",
@@ -385,7 +393,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     if not interaction.response.is_done():
         await interaction.response.send_message(msg, ephemeral=True)
     else:
-        await interaction.followup.send(msg, ephemeral=True)
+        await interaction.response.send_message(msg, ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════
 # 7. LOOPS AUTOMATIQUES
