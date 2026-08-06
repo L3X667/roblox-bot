@@ -10,6 +10,10 @@ from datetime import time, timezone
 import xml.etree.ElementTree as ET
 import re
 import urllib.parse
+import cloudscraper
+from bs4 import BeautifulSoup
+from rut_chile.rut_chile import format_rut_with_dots
+import requests
 
 # ==========================================
 # 1. SERVEUR FLASK POUR RENDER (KEEP ALIVE)
@@ -33,12 +37,12 @@ keep_alive()
 # ==========================================
 # 2. CONFIGURATION DU BOT DISCORD
 # ==========================================
-intents = discord.Intents.default()
-intents.message_content = True
+intents = discord.Intents.all()
+scrap = cloudscraper.create_scraper()
 
 class L3XBot(commands.Bot):
     def __init__(self):
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(command_prefix="/", intents=intents)
         self.session = None
 
     async def setup_hook(self):
@@ -168,7 +172,83 @@ async def slash_robloxversion(interaction: discord.Interaction):
         await interaction.response.send_message(f"❌ Erreur technique : {e}", ephemeral=True)
 
 # ==========================================
-# 4. MODULE ANIME-SAMA (/animesama)
+# 4. MODULE DOXX & RECHERCHES (COMMANDES SLASH)
+# ==========================================
+
+@bot.tree.command(name="doxxname", description="Search person by name")
+@app_commands.describe(name="Name to search")
+async def doxxname(interaction: discord.Interaction, name: str):
+    await interaction.response.defer(ephemeral=True)
+    URL = "https://www.nombrerutyfirma.com/buscar"
+    with open('historialname.txt', 'a') as historialname:
+        namehistorial = name + ", Requested by: " + str(interaction.user) + ", " + "Discord ID: " + str(interaction.user.id) + '\n'
+        historialname.write(namehistorial)
+    response = scrap.get(URL, params={'term': name}).text
+    soup = BeautifulSoup(response, 'html.parser')
+    out = soup.find_all('td')
+    if out == []:
+        await interaction.followup.send("No results available")
+    else:
+        total_people = len(out) // 5
+        await interaction.followup.send(f"Total people found: {total_people}")
+
+        for i in range(0, len(out), 5):
+            name_person = out[i].text
+            rut = out[i+1].text
+            address = out[i+3].text + " " + out[i+4].text
+            result = f"{name_person}, {rut}, {address}"
+            await interaction.followup.send(result)
+
+@bot.tree.command(name="doxxrut", description="Search person by RUT")
+@app_commands.describe(arg="RUT to search")
+async def doxxrut(interaction: discord.Interaction, arg: str):
+    await interaction.response.defer(ephemeral=True)
+    rut = arg
+    URL = "https://www.nombrerutyfirma.com/rut"
+    with open('historialrut.txt', 'a') as historialrut:
+        ruthistorial = rut + ", Requested by: " + str(interaction.user) + ", " + "Discord ID: " + str(interaction.user.id) + '\n'
+        historialrut.write(ruthistorial)
+    response = scrap.get(URL, params={'term': str(format_rut_with_dots(rut))}).text
+    soup = BeautifulSoup(response, 'html.parser')
+    out = soup.find_all('td')
+    if out == []:
+        await interaction.followup.send("No results available")
+    else:
+        address = out[3].text + " " + out[4].text
+        rut_name = out[0].text
+        await interaction.followup.send("Results for: " + rut)
+        total_rut_result = rut_name + ", " + rut + ", " + address
+        await interaction.followup.send(total_rut_result)
+
+@bot.tree.command(name="doxxpatente", description="Search vehicle by plate")
+@app_commands.describe(arg="Plate to search")
+async def doxxpatente(interaction: discord.Interaction, arg: str):
+    await interaction.response.defer(ephemeral=True)
+    plate = arg
+    URL = 'https://www.volanteomaleta.com/pat'
+    with open('historialbusquedapatente.txt', 'a') as historialpatente:
+        patentehistorial = plate + ", Requested by: " + str(interaction.user) + ", " + "Discord ID: " + str(interaction.user.id) + '\n'
+        historialpatente.write(patentehistorial)
+    response = scrap.get(URL, params={'term': plate}).text
+    soup = BeautifulSoup(response, 'html.parser')
+    out = soup.find_all('td')
+    botprotection = soup.find_all('h2')
+    banned = botprotection != []
+    if out == [] and not banned:
+        await interaction.followup.send("No results available")
+    elif banned:
+        await interaction.followup.send("The bot has been banned :(")
+    else:
+        brand = "Brand: " + out[2].text + " "
+        model = "Model: " + out[3].text + " Year: " + out[6].text + " "
+        engine_number = "Engine number: " + out[5].text + " "
+        owner_name = "Owner name: " + out[7].text + " "
+        owner_rut = "Owner RUT: " + out[4].text
+        total_plate_result = "Results: " + brand + model + engine_number + owner_name + owner_rut
+        await interaction.followup.send(total_plate_result)
+
+# ==========================================
+# 5. MODULE ANIME-SAMA (/animesama)
 # ==========================================
 class AnimeView(discord.ui.View):
     def __init__(self, anime_name: str):
@@ -211,7 +291,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         print(f"Erreur de commande slash : {error}")
 
 # ==========================================
-# 5. TÂCHES AUTOMATIQUES DE FOND (LOOPS)
+# 6. TÂCHES AUTOMATIQUES DE FOND (LOOPS)
 # ==========================================
 
 @tasks.loop(time=time(hour=20, minute=0, tzinfo=timezone.utc))
@@ -402,7 +482,7 @@ async def check_twitch_streams():
             currently_live.remove(streamer)
 
 # ==========================================
-# 6. DÉMARRAGE DU BOT
+# 7. DÉMARRAGE DU BOT
 # ==========================================
 TOKEN = os.getenv("DISCORD_TOKEN")
 if TOKEN:
