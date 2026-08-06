@@ -206,7 +206,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         if not interaction.response.is_done():
             await interaction.response.send_message("❌ Tu n'as pas les permissions nécessaires pour exécuter cette commande.", ephemeral=True)
         else:
-            await interaction.followup.send("❌ Tu n'as pas les permissions nécessaires pour exécuter cette commande.", ephemeral=True)
+            await interaction.response.send_message("❌ Tu n'as pas les permissions nécessaires pour exécuter cette commande.", ephemeral=True)
     else:
         print(f"Erreur de commande slash : {error}")
 
