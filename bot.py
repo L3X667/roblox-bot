@@ -6,6 +6,7 @@ from flask import Flask
 from threading import Thread
 from datetime import time, timezone
 import xml.etree.ElementTree as ET
+import re
 
 # ==========================================
 # 1. SERVEUR FLASK POUR RENDER (KEEP ALIVE)
@@ -69,6 +70,7 @@ STREAMERS = [
 
 last_roblox_timestamp = None
 last_rl_patch_title = None
+current_rl_version = "v2.72"  # Version par défaut initiale
 currently_live = set()
 
 # Fonction d'envoi de la boutique RL
@@ -99,13 +101,13 @@ async def on_ready():
 async def manual_shop(ctx):
     await send_rl_shop(ctx.channel)
 
-# Commande manuelle !versionrl pointant vers les patch notes officiels
+# Commande manuelle !versionrl affichant la version dynamique
 @bot.command(name="versionrl", aliases=["versionrocketleague"])
 async def version_rl(ctx):
     patch_url = "https://www.rocketleague.com/news/tag/patch-notes"
     embed = discord.Embed(
         title="🎮 PATCH NOTES & VERSIONS ROCKET LEAGUE",
-        description=f"Consulte les dernières notes de mise à jour officielles :\n\n👉 **[Clique ici pour voir les Patch Notes]({patch_url})**",
+        description=f"Version actuelle du jeu : **{current_rl_version}**\n\nConsulte les dernières notes de mise à jour officielles :\n\n👉 **[Clique ici pour voir les Patch Notes]({patch_url})**",
         color=discord.Color.orange()
     )
     embed.add_field(name="📌 Suivi des versions", value="Lien direct vers les patchs officiels", inline=False)
@@ -124,7 +126,7 @@ async def daily_rl_shop():
 # ------------------------------------------
 @tasks.loop(minutes=5)
 async def check_rocket_league_patches():
-    global last_rl_patch_title
+    global last_rl_patch_title, current_rl_version
     rss_url = "https://www.rocketleague.com/news/rss/"
 
     async with aiohttp.ClientSession() as session:
@@ -134,13 +136,16 @@ async def check_rocket_league_patches():
                     xml_content = await response.text()
                     root = ET.fromstring(xml_content)
                     
-                    # Parcourir les articles pour trouver un patch note récent
                     for item in root.findall(".//item"):
                         title = item.find("title").text
                         link = item.find("link").text
                         
-                        # Vérifie si l'article concerne un patch / mise à jour de version
                         if "patch" in title.lower() or "v2." in title.lower() or "update" in title.lower():
+                            # Extraire automatiquement le numéro de version (ex: v2.73) s'il est présent dans le titre
+                            match = re.search(r'v2\.\d+', title, re.IGNORECASE)
+                            if match:
+                                current_rl_version = match.group(0)
+
                             if last_rl_patch_title is None:
                                 last_rl_patch_title = title
                             elif title != last_rl_patch_title:
@@ -148,7 +153,7 @@ async def check_rocket_league_patches():
                                 channel = bot.get_channel(RL_UPDATES_CHANNEL_ID)
                                 if channel:
                                     embed = discord.Embed(
-                                        title="🚀 NOUVELLE VERSION / PATCH NOTE ROCKET LEAGUE !",
+                                        title=f"🚀 NOUVELLE VERSION ({current_rl_version}) ROCKET LEAGUE !",
                                         description=f"**{title}**",
                                         url=link,
                                         color=discord.Color.orange()
@@ -256,7 +261,7 @@ async def check_twitch_streams():
                                             title=f"🔴 {stream['user_name']} est en LIVE sur Rocket League !",
                                             description=f"**Titre :** {stream['title']}\n**Spectateurs :** 👁️ {stream['viewer_count']}",
                                             url=stream_url,
-                                            color=discord.Color.purple()
+                                    color=discord.Color.purple()
                                         )
                                         embed.set_thumbnail(url=stream['thumbnail_url'].replace("{width}", "320").replace("{height}", "180"))
                                         embed.add_field(name="Lien du Stream", value=stream_url, inline=False)
