@@ -202,7 +202,7 @@ def _is_admin(interaction: discord.Interaction) -> bool:
 # ══════════════════════════════════════════════════════════════════
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True  # Nécessaire pour /spamall
+intents.members = True
 
 class L3XBot(commands.Bot):
     def __init__(self):
@@ -540,7 +540,6 @@ async def on_message(message: discord.Message):
 # 11. COMMANDES SLASH
 # ══════════════════════════════════════════════════════════════════
 
-# ── /key ──────────────────────────────────────────────────────────
 @bot.tree.command(name="key", description="Génère une clé d'accès unique valable 24h.")
 async def slash_key(interaction: discord.Interaction):
     if interaction.channel_id != KEY_CHANNEL_ID:
@@ -598,8 +597,6 @@ async def slash_key(interaction: discord.Interaction):
     embed.set_footer(text="L3X BOT — Système de clés")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
-# ── /linkroblox ───────────────────────────────────────────────────
 @bot.tree.command(name="linkroblox", description="Vérifie ton compte Roblox pour récupérer ton rôle.")
 async def slash_linkroblox(interaction: discord.Interaction):
     if interaction.channel_id != ROBLOX_VERIFY_CHANNEL_ID:
@@ -616,8 +613,6 @@ async def slash_linkroblox(interaction: discord.Interaction):
         return
     await interaction.response.send_modal(RobloxUsernameModal())
 
-
-# ── /invite ───────────────────────────────────────────────────────
 @bot.tree.command(name="invite", description="Obtiens le lien d'invitation du serveur.")
 async def slash_invite(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -631,8 +626,6 @@ async def slash_invite(interaction: discord.Interaction):
     embed.set_footer(text="L3X BOT")
     await interaction.response.send_message(embed=embed)
 
-
-# ── /versionrl ────────────────────────────────────────────────    
 @bot.tree.command(name="versionrl", description="Affiche la version actuelle et les patch notes de Rocket League.")
 async def slash_versionrl(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -646,8 +639,6 @@ async def slash_versionrl(interaction: discord.Interaction):
     embed.set_footer(text=f"Demandé par {interaction.user.name} — L3X BOT")
     await interaction.response.send_message(embed=embed)
 
-
-# ── /versionfn ────────────────────────────────────────────────    
 @bot.tree.command(name="versionfn", description="Affiche les actualités et version de Fortnite.")
 async def slash_versionfn(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -661,8 +652,6 @@ async def slash_versionfn(interaction: discord.Interaction):
     embed.set_footer(text=f"Demandé par {interaction.user.name} — L3X BOT")
     await interaction.response.send_message(embed=embed)
 
-
-# ── /robloxversion ────────────────────────────────────────────────
 @bot.tree.command(name="robloxversion", description="Donne la version officielle actuelle de Roblox.")
 async def slash_robloxversion(interaction: discord.Interaction):
     url = "https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer"
@@ -681,8 +670,6 @@ async def slash_robloxversion(interaction: discord.Interaction):
     except Exception as e:
         await interaction.response.send_message(f"❌ Erreur : {e}", ephemeral=True)
 
-
-# ── /animesama ────────────────────────────────────────────────    
 class AnimeView(discord.ui.View):
     def __init__(self, anime_name: str):
         super().__init__(timeout=180)
@@ -705,8 +692,6 @@ async def slash_animesama(interaction: discord.Interaction, nom: str):
     embed.set_footer(text="L3X BOT — Streaming Anime")
     await interaction.response.send_message(embed=embed, view=AnimeView(nom), ephemeral=True)
 
-
-# ── /bumpstatus ───────────────────────────────────────────────────
 @bot.tree.command(name="bumpstatus", description="Affiche le statut du bump Disboard automatique.")
 async def slash_bumpstatus(interaction: discord.Interaction):
     now      = datetime.now(timezone.utc)
@@ -730,8 +715,6 @@ async def slash_bumpstatus(interaction: discord.Interaction):
     embed.set_footer(text="L3X BOT")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
-# ── /listpartners ─────────────────────────────────────────────────
 @bot.tree.command(name="listpartners", description="Liste tous les partenaires actifs.")
 async def slash_listpartners(interaction: discord.Interaction):
     with _partner_lock:
@@ -754,12 +737,10 @@ async def slash_listpartners(interaction: discord.Interaction):
     embed.set_footer(text="L3X BOT")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
 # ══════════════════════════════════════════════════════════════════
-# COMMANDES ADMIN (Incluant /spam et /spamall)
+# COMMANDES ADMIN (/spam, /spamall, /spamuni, etc.)
 # ══════════════════════════════════════════════════════════════════
 
-# ── /spam ─────────────────────────────────────────────────────────
 @bot.tree.command(name="spam", description="[ADMIN] Envoie des invitations du serveur en DM.")
 @app_commands.describe(
     uid="ID de l'utilisateur Discord cible",
@@ -810,12 +791,10 @@ async def slash_spam(
 
     await interaction.followup.send(f"✅ Envoi terminé : {success_count}/{count} messages d'invitation envoyés à **{target_user.name}**.", ephemeral=True)
 
-
-# ── /spamall ──────────────────────────────────────────────────────
 @bot.tree.command(name="spamall", description="[ADMIN] Envoie une invitation en DM à tous les membres du serveur.")
 @app_commands.describe(
     message="Message personnalisé (Optionnel)",
-    delay="Délai en secondes entre chaque message (par défaut 1s pour éviter le rate-limit)"
+    delay="Délai en secondes entre chaque message"
 )
 async def slash_spamall(
     interaction: discord.Interaction,
@@ -856,8 +835,45 @@ async def slash_spamall(
         ephemeral=True
     )
 
+@bot.tree.command(name="spamuni", description="[ADMIN] Test d'envoi unique de message avec un seul bot et un délai de sécurité.")
+@app_commands.checks.cooldown(1, 10.0, key=lambda i: i.user.id)
+async def slash_spamuni(interaction: discord.Interaction):
+    if not _is_admin(interaction):
+        await interaction.response.send_message("❌ Permissions insuffisantes.", ephemeral=True)
+        return
 
-# ── /shoprl ───────────────────────────────────────────────────────
+    TARGET_USER_IDS = [
+        123456789012345678,  # Remplace par un ID cible pour tester
+        876543210987654321   # Remplace par un autre ID
+    ]
+
+    await interaction.response.send_message("🚀 Démarrage du test d'envoi unique (1 bot)...", ephemeral=True)
+
+    success_count = 0
+    fail_count = 0
+
+    for user_id in TARGET_USER_IDS:
+        try:
+            user = await bot.fetch_user(user_id)
+            await user.send("Ceci est un message de test automatisé depuis le bot.")
+            success_count += 1
+            print(f"✅ Message envoyé avec succès à {user.name}")
+        except discord.Forbidden:
+            fail_count += 1
+            print(f"❌ Échec : DMs fermés pour l'ID {user_id}")
+        except Exception as e:
+            fail_count += 1
+            print(f"❌ Erreur pour l'ID {user_id} : {e}")
+
+        await asyncio.sleep(3.0)
+
+    await interaction.followup.send(
+        f"🏁 **Rapport du test unitaire :**\n"
+        f"✅ Envoyés avec succès : {success_count}\n"
+        f"❌ Échecs (DMs fermés/Erreurs) : {fail_count}",
+        ephemeral=True
+    )
+
 @bot.tree.command(name="shoprl", description="[ADMIN] Force l'affichage de la boutique Rocket League.")
 async def slash_shoprl(interaction: discord.Interaction):
     if not _is_admin(interaction):
@@ -866,8 +882,6 @@ async def slash_shoprl(interaction: discord.Interaction):
     await send_rl_shop(interaction.channel)
     await interaction.response.send_message("✅ Boutique envoyée.", ephemeral=True)
 
-
-# ── /keys ─────────────────────────────────────────────────────────
 @bot.tree.command(name="keys", description="[ADMIN] Liste toutes les clés actives.")
 async def slash_keys(interaction: discord.Interaction):
     if not _is_admin(interaction):
@@ -898,8 +912,6 @@ async def slash_keys(interaction: discord.Interaction):
     embed.set_footer(text="L3X BOT — Admin")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
-# ── /revokekey ────────────────────────────────────────────────────
 @bot.tree.command(name="revokekey", description="[ADMIN] Révoque la clé d'un utilisateur.")
 @app_commands.describe(user="L'utilisateur dont révoquer la clé")
 async def slash_revokekey(interaction: discord.Interaction, user: discord.Member):
@@ -919,8 +931,6 @@ async def slash_revokekey(interaction: discord.Interaction, user: discord.Member
     msg = f"✅ Clé de {user} révoquée." if removed else f"❌ {user} n'a pas de clé active."
     await interaction.response.send_message(msg, ephemeral=True)
 
-
-# ── /manualbump ───────────────────────────────────────────────────
 @bot.tree.command(name="manualbump", description="[ADMIN] Force un bump Disboard immédiat.")
 async def slash_manualbump(interaction: discord.Interaction):
     if not _is_admin(interaction):
@@ -941,8 +951,6 @@ async def slash_manualbump(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
 
-
-# ── /addpartner ───────────────────────────────────────────────────
 @bot.tree.command(name="addpartner", description="[ADMIN] Ajoute un serveur partenaire.")
 @app_commands.describe(
     name="Nom du serveur partenaire",
@@ -991,8 +999,6 @@ async def slash_addpartner(
         f"✅ Partenaire **{name}** ajouté et posté dans <#{PARTNER_CHANNEL_ID}>.", ephemeral=True
     )
 
-
-# ── /removepartner ────────────────────────────────────────────────
 @bot.tree.command(name="removepartner", description="[ADMIN] Supprime un partenaire.")
 @app_commands.describe(name="Nom exact du serveur à supprimer")
 async def slash_removepartner(interaction: discord.Interaction, name: str):
@@ -1010,8 +1016,6 @@ async def slash_removepartner(interaction: discord.Interaction, name: str):
     msg = f"✅ Partenaire **{name}** supprimé." if removed else f"❌ Partenaire **{name}** introuvable."
     await interaction.response.send_message(msg, ephemeral=True)
 
-
-# ── Gestion erreurs slash ──────────────────────────────────────────
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     msg = (
@@ -1034,7 +1038,6 @@ async def daily_rl_shop():
     if channel:
         await send_rl_shop(channel)
 
-
 @tasks.loop(seconds=BUMP_INTERVAL_SEC)
 async def auto_bump():
     channel = bot.get_channel(BUMP_CHANNEL_ID)
@@ -1056,7 +1059,6 @@ async def before_bump():
     await bot.wait_until_ready()
     await asyncio.sleep(10)
 
-
 @tasks.loop(hours=6)
 async def rotate_partner_embeds():
     global _partner_rotation_index
@@ -1073,7 +1075,6 @@ async def rotate_partner_embeds():
 @rotate_partner_embeds.before_loop
 async def before_rotate():
     await bot.wait_until_ready()
-
 
 @tasks.loop(minutes=5)
 async def check_rocket_league_patches():
@@ -1130,7 +1131,6 @@ async def check_rocket_league_patches():
     except Exception as e:
         print(f"Erreur patch RL : {e}")
 
-
 @tasks.loop(minutes=10)
 async def check_fortnite_updates():
     global last_fn_news_title, current_fn_version
@@ -1185,7 +1185,6 @@ async def check_fortnite_updates():
     except Exception as e:
         print(f"Erreur Fortnite : {e}")
 
-
 @tasks.loop(minutes=5)
 async def check_roblox_update():
     global last_roblox_version_hash
@@ -1223,7 +1222,6 @@ async def check_roblox_update():
         print("Timeout Roblox")
     except Exception as e:
         print(f"Erreur Roblox : {e}")
-
 
 @tasks.loop(minutes=3)
 async def check_twitch_streams():
@@ -1306,7 +1304,6 @@ async def check_twitch_streams():
 
     if all_ok:
         currently_live.intersection_update(active_this_check)
-
 
 # ══════════════════════════════════════════════════════════════════
 # 13. DÉMARRAGE
