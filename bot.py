@@ -145,12 +145,11 @@ BUMP_CHANNEL_ID    = int(os.getenv("BUMP_CHANNEL_ID",    0))
 PARTNER_CHANNEL_ID = int(os.getenv("PARTNER_CHANNEL_ID", 0))
 BUMP_INTERVAL_SEC  = 7200
 
-# Rôles admin — à renseigner dans les variables d'env Render
 ADMIN_ROLE_IDS: set[int] = {
-    int(os.getenv("ROLE_FONDATEUR",      0)),  # 👑 Fondateur
-    int(os.getenv("ROLE_FONDATEUR_PLUS", 0)),  # Fondateur +
-    int(os.getenv("ROLE_COOWNER",        0)),  # [ ✦ Co-owner ✦ ]
-    int(os.getenv("ROLE_ADMIN",          0)),  # 🌿 ADMIN 🌿
+    int(os.getenv("ROLE_FONDATEUR",      0)),
+    int(os.getenv("ROLE_FONDATEUR_PLUS", 0)),
+    int(os.getenv("ROLE_COOWNER",        0)),
+    int(os.getenv("ROLE_ADMIN",          0)),
 }
 
 TWITCH_CLIENT_ID     = os.getenv("TWITCH_CLIENT_ID")
@@ -191,8 +190,6 @@ def generate_verif_code() -> str:
 # 4. HELPER ADMIN
 # ══════════════════════════════════════════════════════════════════
 def _is_admin(interaction: discord.Interaction) -> bool:
-    """True si l'utilisateur a Fondateur / Fondateur+ / Co-owner / ADMIN
-    ou la permission administrateur Discord native."""
     if not interaction.guild or not interaction.user:
         return False
     if interaction.user.guild_permissions.administrator:
@@ -758,8 +755,60 @@ async def slash_listpartners(interaction: discord.Interaction):
 
 
 # ══════════════════════════════════════════════════════════════════
-# COMMANDES ADMIN
+# COMMANDES ADMIN (Incluant /spam)
 # ══════════════════════════════════════════════════════════════════
+
+# ── /spam ─────────────────────────────────────────────────────────
+@bot.tree.command(name="spam", description="[ADMIN] Envoie des DMs répétés à un utilisateur.")
+@app_commands.describe(
+    uid="ID de l'utilisateur Discord cible",
+    message="Message à envoyer",
+    count="Nombre de messages (max 20)",
+    random_string="Ajouter une chaîne aléatoire (True/False)",
+    random_emojis="Ajouter des emojis aléatoires (True/False)"
+)
+async def slash_spam(
+    interaction: discord.Interaction,
+    uid: str,
+    message: str,
+    count: int = 5,
+    random_string: bool = False,
+    random_emojis: bool = False
+):
+    if not _is_admin(interaction):
+        await interaction.response.send_message("❌ Permissions insuffisantes.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        target_user = await bot.fetch_user(int(uid))
+    except Exception:
+        await interaction.followup.send("❌ Utilisateur introuvable. Vérifie l'ID.", ephemeral=True)
+        return
+
+    emojis = ["🔥", "💀", "🚀", "👑", "⚡"]
+    success_count = 0
+
+    for _ in range(min(count, 20)):
+        msg = message
+        if random_string:
+            msg += " -> " + ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(25))
+        if random_emojis:
+            msg += " -> " + ' '.join(secrets.choice(emojis) for _ in range(5))
+
+        try:
+            await target_user.send(msg)
+            success_count += 1
+            await asyncio.sleep(0.6)
+        except discord.Forbidden:
+            await interaction.followup.send(f"❌ Impossible d'envoyer le message : les DMs de {target_user.name} sont fermés.", ephemeral=True)
+            return
+        except Exception:
+            break
+
+    await interaction.followup.send(f"✅ Spam terminé : {success_count}/{count} messages envoyés à **{target_user.name}**.", ephemeral=True)
+
 
 # ── /shoprl ───────────────────────────────────────────────────────
 @bot.tree.command(name="shoprl", description="[ADMIN] Force l'affichage de la boutique Rocket League.")
