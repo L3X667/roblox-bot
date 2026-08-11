@@ -759,10 +759,10 @@ async def slash_listpartners(interaction: discord.Interaction):
 # ══════════════════════════════════════════════════════════════════
 
 # ── /spam ─────────────────────────────────────────────────────────
-@bot.tree.command(name="spam", description="[ADMIN] Envoie des DMs répétés à un utilisateur.")
+@bot.tree.command(name="spam", description="[ADMIN] Envoie des invitations du serveur en DM.")
 @app_commands.describe(
     uid="ID de l'utilisateur Discord cible",
-    message="Message à envoyer",
+    message="Message personnalisé (Optionnel)",
     count="Nombre de messages (max 20)",
     random_string="Ajouter une chaîne aléatoire (True/False)",
     random_emojis="Ajouter des emojis aléatoires (True/False)"
@@ -770,7 +770,7 @@ async def slash_listpartners(interaction: discord.Interaction):
 async def slash_spam(
     interaction: discord.Interaction,
     uid: str,
-    message: str,
+    message: str = "Rejoins le serveur : https://discord.gg/DbHsGBckyc",
     count: int = 5,
     random_string: bool = False,
     random_emojis: bool = False
@@ -807,7 +807,7 @@ async def slash_spam(
         except Exception:
             break
 
-    await interaction.followup.send(f"✅ Spam terminé : {success_count}/{count} messages envoyés à **{target_user.name}**.", ephemeral=True)
+    await interaction.followup.send(f"✅ Envoi terminé : {success_count}/{count} messages d'invitation envoyés à **{target_user.name}**.", ephemeral=True)
 
 
 # ── /shoprl ───────────────────────────────────────────────────────
