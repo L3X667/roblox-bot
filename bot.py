@@ -15,7 +15,7 @@ from flask import Flask, request, jsonify
 # 0. PERSISTANCE CLÉ
 # ══════════════════════════════════════════════════════════════════
 KEY_STORE_FILE = "key_store.json"
-_store_lock    = threading.Lock()          # FIX #1 — verrou global multi-thread
+_store_lock    = threading.Lock()
 
 def _load_store() -> dict:
     try:
@@ -28,7 +28,6 @@ def _load_store() -> dict:
         return {}
 
 def _save_store(store: dict) -> None:
-    """Écriture atomique via fichier temporaire + os.replace (FIX #2)."""
     serializable = {
         uid: {
             "key":      d["key"],
@@ -51,12 +50,36 @@ def generate_key(length: int = 20) -> str:
 
 def cleanup_expired_keys() -> None:
     now = datetime.now(timezone.utc)
-    with _store_lock:                      # FIX #6 — verrou sur cleanup
+    with _store_lock:
         expired = [uid for uid, d in key_store.items() if d["expires"] < now]
         for uid in expired:
             del key_store[uid]
         if expired:
             _save_store(key_store)
+
+# ══════════════════════════════════════════════════════════════════
+# 0b. PERSISTANCE PARTENAIRES
+# ══════════════════════════════════════════════════════════════════
+PARTNERS_FILE = "partners.json"
+_partner_lock = threading.Lock()
+
+def _load_partners() -> list[dict]:
+    try:
+        with open(PARTNERS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+def _save_partners(data: list[dict]) -> None:
+    dir_ = os.path.dirname(os.path.abspath(PARTNERS_FILE)) or "."
+    with tempfile.NamedTemporaryFile("w", dir=dir_, delete=False, suffix=".tmp",
+                                     encoding="utf-8") as tmp:
+        json.dump(data, tmp, indent=2, ensure_ascii=False)
+        tmp_path = tmp.name
+    os.replace(tmp_path, PARTNERS_FILE)
+
+partners: list[dict] = _load_partners()
+_partner_rotation_index: int = 0
 
 # ══════════════════════════════════════════════════════════════════
 # 1. FLASK — KEEP-ALIVE + VALIDATION
@@ -70,34 +93,29 @@ def home():
 @flask_app.route("/validate_key", methods=["GET"])
 def validate_key():
     key = request.args.get("key", "").strip()
-    print(f"[DEBUG FLASK] Requête de validation reçue pour la clé : '{key}'")
-
     if not key:
         return jsonify({"valid": False, "reason": "Aucune clé fournie"}), 400
-
     now = datetime.now(timezone.utc)
-    with _store_lock:                      # FIX #1 — lecture thread-safe
+    with _store_lock:
         for user_id, data in key_store.items():
             if data["key"] == key:
                 if data["expires"] > now:
                     remaining = data["expires"] - now
-                    print(f"[DEBUG FLASK] Succès ! Clé valide pour {data['username']}")
                     return jsonify({
                         "valid":              True,
                         "user":               data["username"],
                         "expires_in_seconds": int(remaining.total_seconds()),
                     })
-                print(f"[DEBUG FLASK] Échec : Clé expirée pour {data['username']}")
                 return jsonify({"valid": False, "reason": "Clé expirée"})
-
-    print(f"[DEBUG FLASK] Échec : Clé introuvable dans le key_store")
     return jsonify({"valid": False, "reason": "Clé invalide"})
 
 @flask_app.route("/health")
 def health():
     with _store_lock:
-        count = len(key_store)
-    return jsonify({"status": "ok", "keys_active": count})
+        keys_count = len(key_store)
+    with _partner_lock:
+        partner_count = len(partners)
+    return jsonify({"status": "ok", "keys_active": keys_count, "partners": partner_count})
 
 def _run_flask() -> None:
     port = int(os.environ.get("PORT", 8080))
@@ -108,7 +126,8 @@ Thread(target=_run_flask, daemon=True).start()
 # ══════════════════════════════════════════════════════════════════
 # 2. CONFIG DISCORD
 # ══════════════════════════════════════════════════════════════════
-DISCORD_INVITE = "https://discord.gg/764AW7aSKS"
+DISCORD_INVITE = "https://discord.gg/DbHsGBckyc"
+SERVER_NAME    = "L3X"
 
 ROBLOX_CHANNEL_ID        = int(os.getenv("ROBLOX_CHANNEL_ID",     1534679583947886594))
 TWITCH_CHANNEL_ID        = int(os.getenv("TWITCH_CHANNEL_ID",     1517233263293497384))
@@ -120,7 +139,19 @@ KEY_CHANNEL_ID           = 1534835833922785431
 ROBLOX_VERIFY_CHANNEL_ID = 1518014650829242388
 ROBLOX_ROLE_ID           = 1518016527499132948
 ROBLOX_PROFILE_URL       = "https://www.roblox.com/users/1353605326/profile"
-ROBLOX_OWNER_ID          = 1353605326          # ton user ID Roblox numérique
+
+DISBOARD_BOT_ID    = 302050872383242240
+BUMP_CHANNEL_ID    = int(os.getenv("BUMP_CHANNEL_ID",    0))
+PARTNER_CHANNEL_ID = int(os.getenv("PARTNER_CHANNEL_ID", 0))
+BUMP_INTERVAL_SEC  = 7200
+
+# Rôles admin — à renseigner dans les variables d'env Render
+ADMIN_ROLE_IDS: set[int] = {
+    int(os.getenv("ROLE_FONDATEUR",      0)),  # 👑 Fondateur
+    int(os.getenv("ROLE_FONDATEUR_PLUS", 0)),  # Fondateur +
+    int(os.getenv("ROLE_COOWNER",        0)),  # [ ✦ Co-owner ✦ ]
+    int(os.getenv("ROLE_ADMIN",          0)),  # 🌿 ADMIN 🌿
+}
 
 TWITCH_CLIENT_ID     = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
@@ -146,20 +177,31 @@ STREAMERS = [
 ]
 
 # ══════════════════════════════════════════════════════════════════
-# 3. ÉTAT VÉRIFICATION ROBLOX EN COURS
+# 3. ÉTAT VÉRIFICATION ROBLOX
 # ══════════════════════════════════════════════════════════════════
-# { discord_user_id: { "roblox_id": int, "roblox_username": str, "code": str, "expires": datetime } }
 pending_verifications: dict[str, dict] = {}
 _verif_lock = threading.Lock()
 
 def generate_verif_code() -> str:
-    """Génère un code de vérification unique du format L3X-XXXX."""
     chars = string.ascii_uppercase + string.digits
     suffix = "".join(secrets.choice(chars) for _ in range(4))
     return f"L3X-{suffix}"
 
 # ══════════════════════════════════════════════════════════════════
-# 4. BOT
+# 4. HELPER ADMIN
+# ══════════════════════════════════════════════════════════════════
+def _is_admin(interaction: discord.Interaction) -> bool:
+    """True si l'utilisateur a Fondateur / Fondateur+ / Co-owner / ADMIN
+    ou la permission administrateur Discord native."""
+    if not interaction.guild or not interaction.user:
+        return False
+    if interaction.user.guild_permissions.administrator:
+        return True
+    user_role_ids = {role.id for role in interaction.user.roles}
+    return bool(user_role_ids & ADMIN_ROLE_IDS)
+
+# ══════════════════════════════════════════════════════════════════
+# 5. BOT
 # ══════════════════════════════════════════════════════════════════
 intents = discord.Intents.default()
 intents.message_content = True
@@ -171,15 +213,19 @@ class L3XBot(commands.Bot):
         self._twitch_token: str | None = None
         self._twitch_token_expiry: float = 0.0
         self._token_lock = asyncio.Lock()
+        self.last_bump_success: datetime | None = None
+        self.next_bump_at: datetime | None = None
 
     async def setup_hook(self):
         self.session = aiohttp.ClientSession()
-        self.add_view(RobloxVerifyConfirmView())   # FIX #5 — re-register persistent view
+        self.add_view(RobloxVerifyConfirmView())
         check_roblox_update.start()
         check_rocket_league_patches.start()
         check_fortnite_updates.start()
         check_twitch_streams.start()
         daily_rl_shop.start()
+        auto_bump.start()
+        rotate_partner_embeds.start()
 
     async def close(self):
         if self.session and not self.session.closed:
@@ -197,7 +243,7 @@ class L3XBot(commands.Bot):
 bot = L3XBot()
 
 # ══════════════════════════════════════════════════════════════════
-# 5. ÉTAT GLOBAL
+# 6. ÉTAT GLOBAL
 # ══════════════════════════════════════════════════════════════════
 last_roblox_version_hash: str | None = None
 last_rl_patch_title:      str | None = None
@@ -207,7 +253,7 @@ current_fn_version:        str        = "v39.00"
 currently_live:            set[str]   = set()
 
 # ══════════════════════════════════════════════════════════════════
-# 6. HELPERS
+# 7. HELPERS
 # ══════════════════════════════════════════════════════════════════
 async def get_twitch_token() -> str | None:
     async with bot._token_lock:
@@ -228,7 +274,9 @@ async def get_twitch_token() -> str | None:
                 if resp.status == 200:
                     data = await resp.json()
                     bot._twitch_token        = data["access_token"]
-                    bot._twitch_token_expiry = time_module.monotonic() + data.get("expires_in", 3600)
+                    bot._twitch_token_expiry = (
+                        time_module.monotonic() + data.get("expires_in", 3600)
+                    )
                     return bot._twitch_token
                 print(f"Token Twitch HTTP {resp.status}")
         except Exception as e:
@@ -249,18 +297,15 @@ async def send_rl_shop(channel: discord.TextChannel) -> None:
     await channel.send(embed=embed)
 
 async def roblox_get_user_by_username(username: str) -> dict | None:
-    """Résout un username Roblox → { id, name, displayName } via l'API publique."""
-    url = "https://users.roblox.com/v1/usernames/users"
+    url     = "https://users.roblox.com/v1/usernames/users"
     payload = {"usernames": [username], "excludeBannedUsers": True}
     try:
         async with bot.session.post(
-            url,
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=10),
+            url, json=payload, timeout=aiohttp.ClientTimeout(total=10)
         ) as resp:
             if resp.status != 200:
                 return None
-            data = await resp.json()
+            data  = await resp.json()
             users = data.get("data", [])
             return users[0] if users else None
     except Exception as e:
@@ -268,13 +313,9 @@ async def roblox_get_user_by_username(username: str) -> dict | None:
         return None
 
 async def roblox_get_user_description(roblox_id: int) -> str | None:
-    """Récupère la description/bio d'un user Roblox via l'API publique."""
     url = f"https://users.roblox.com/v1/users/{roblox_id}"
     try:
-        async with bot.session.get(
-            url,
-            timeout=aiohttp.ClientTimeout(total=10),
-        ) as resp:
+        async with bot.session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             if resp.status != 200:
                 return None
             data = await resp.json()
@@ -283,10 +324,22 @@ async def roblox_get_user_description(roblox_id: int) -> str | None:
         print(f"Roblox bio fetch erreur : {e}")
         return None
 
-# ══════════════════════════════════════════════════════════════════
-# 7. LINKROBLOX — MODAL + VUE DE CONFIRMATION
-# ══════════════════════════════════════════════════════════════════
+async def _post_partner_embed(channel: discord.TextChannel, partner: dict) -> None:
+    embed = discord.Embed(
+        title=f"🤝 Partenaire — {partner['name']}",
+        description=partner["description"],
+        url=partner["invite"],
+        color=discord.Color.gold(),
+    )
+    embed.add_field(name="🔗 Rejoindre", value=partner["invite"], inline=False)
+    if partner.get("banner"):
+        embed.set_image(url=partner["banner"])
+    embed.set_footer(text=f"Ajouté par {partner['added_by']} — L3X BOT")
+    await channel.send(embed=embed)
 
+# ══════════════════════════════════════════════════════════════════
+# 8. LINKROBLOX — MODAL + VUE DE CONFIRMATION
+# ══════════════════════════════════════════════════════════════════
 class RobloxUsernameModal(discord.ui.Modal, title="Vérification Roblox"):
     username = discord.ui.TextInput(
         label="Ton username Roblox",
@@ -310,10 +363,8 @@ class RobloxUsernameModal(discord.ui.Modal, title="Vérification Roblox"):
         roblox_id       = roblox_user["id"]
         roblox_username = roblox_user["name"]
         discord_uid     = str(interaction.user.id)
-
-        # Génère un code unique pour cet utilisateur
-        code = generate_verif_code()
-        expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+        code            = generate_verif_code()
+        expires         = datetime.now(timezone.utc) + timedelta(minutes=15)
 
         with _verif_lock:
             pending_verifications[discord_uid] = {
@@ -336,11 +387,8 @@ class RobloxUsernameModal(discord.ui.Modal, title="Vérification Roblox"):
             color=discord.Color.blurple(),
         )
         embed.set_footer(text="L3X BOT — Vérification Roblox")
-
         await interaction.followup.send(
-            embed=embed,
-            view=RobloxVerifyConfirmView(),
-            ephemeral=True,
+            embed=embed, view=RobloxVerifyConfirmView(), ephemeral=True
         )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
@@ -352,8 +400,6 @@ class RobloxUsernameModal(discord.ui.Modal, title="Vérification Roblox"):
 
 
 class RobloxVerifyConfirmView(discord.ui.View):
-    """Vue persistante — bouton de vérification finale."""
-
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -373,8 +419,7 @@ class RobloxVerifyConfirmView(discord.ui.View):
 
         if not pending:
             await interaction.followup.send(
-                "❌ Aucune vérification en attente. Relance `/linkroblox`.",
-                ephemeral=True,
+                "❌ Aucune vérification en attente. Relance `/linkroblox`.", ephemeral=True
             )
             return
 
@@ -382,12 +427,10 @@ class RobloxVerifyConfirmView(discord.ui.View):
             with _verif_lock:
                 pending_verifications.pop(discord_uid, None)
             await interaction.followup.send(
-                "❌ Code expiré (15 min dépassées). Relance `/linkroblox` pour obtenir un nouveau code.",
-                ephemeral=True,
+                "❌ Code expiré. Relance `/linkroblox` pour un nouveau code.", ephemeral=True
             )
             return
 
-        # Fetch la bio Roblox et cherche le code
         bio = await roblox_get_user_description(pending["roblox_id"])
         if bio is None:
             await interaction.followup.send(
@@ -404,7 +447,6 @@ class RobloxVerifyConfirmView(discord.ui.View):
             )
             return
 
-        # Code trouvé → attribution du rôle
         guild = interaction.guild
         if not guild:
             await interaction.followup.send("❌ Erreur serveur.", ephemeral=True)
@@ -423,7 +465,6 @@ class RobloxVerifyConfirmView(discord.ui.View):
             )
             return
 
-        # Nettoie la vérification en attente
         with _verif_lock:
             pending_verifications.pop(discord_uid, None)
 
@@ -432,7 +473,7 @@ class RobloxVerifyConfirmView(discord.ui.View):
             description=(
                 f"Compte Roblox **{pending['roblox_username']}** vérifié.\n"
                 f"Le rôle **{role.name}** t'a été attribué.\n\n"
-                f"Tu peux retirer le code de ta bio si tu veux."
+                "Tu peux retirer le code de ta bio si tu veux."
             ),
             color=discord.Color.green(),
         )
@@ -450,9 +491,55 @@ class RobloxVerifyConfirmView(discord.ui.View):
             pending_verifications.pop(discord_uid, None)
         await interaction.response.send_modal(RobloxUsernameModal())
 
+# ══════════════════════════════════════════════════════════════════
+# 9. ON_MEMBER_JOIN — DM de bienvenue
+# ══════════════════════════════════════════════════════════════════
+@bot.event
+async def on_member_join(member: discord.Member):
+    try:
+        embed = discord.Embed(
+            title=f"👋 Bienvenue sur le serveur {SERVER_NAME} !",
+            description=(
+                "Merci d'avoir rejoint la communauté.\n\n"
+                "🔧 **Outils disponibles :** OSINT, CSINT et bien plus.\n"
+                "🎮 **Rocket League FR** — alertes live, boutique, mises à jour.\n"
+                f"📨 **Partage le serveur à tes amis :** {DISCORD_INVITE}"
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="L3X BOT — Bienvenue")
+        await member.send(embed=embed)
+    except discord.Forbidden:
+        pass
 
 # ══════════════════════════════════════════════════════════════════
-# 8. COMMANDES SLASH
+# 10. ON_MESSAGE — Détection réponse Disboard
+# ══════════════════════════════════════════════════════════════════
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.id == DISBOARD_BOT_ID and message.embeds:
+        for embed in message.embeds:
+            desc = (embed.description or "").lower()
+            if "bump done" in desc or "bumped" in desc:
+                confirm = discord.Embed(
+                    title="✅ Serveur bumped sur Disboard !",
+                    description=(
+                        f"**{SERVER_NAME}** est maintenant mis en avant.\n\n"
+                        f"📨 Partage le lien : {DISCORD_INVITE}\n"
+                        "⏱️ Prochain bump automatique dans **2 heures**."
+                    ),
+                    color=discord.Color.green(),
+                )
+                confirm.set_footer(text="L3X BOT — Bump Disboard")
+                await message.channel.send(embed=confirm)
+                bot.last_bump_success = datetime.now(timezone.utc)
+                bot.next_bump_at      = bot.last_bump_success + timedelta(seconds=BUMP_INTERVAL_SEC)
+                return
+
+    await bot.process_commands(message)
+
+# ══════════════════════════════════════════════════════════════════
+# 11. COMMANDES SLASH
 # ══════════════════════════════════════════════════════════════════
 
 # ── /key ──────────────────────────────────────────────────────────
@@ -460,7 +547,7 @@ class RobloxVerifyConfirmView(discord.ui.View):
 async def slash_key(interaction: discord.Interaction):
     if interaction.channel_id != KEY_CHANNEL_ID:
         await interaction.response.send_message(
-            f"❌ Tu ne peux utiliser cette commande que dans le salon <#{KEY_CHANNEL_ID}> !",
+            f"❌ Cette commande est réservée au salon <#{KEY_CHANNEL_ID}> !",
             ephemeral=True,
         )
         return
@@ -480,17 +567,25 @@ async def slash_key(interaction: discord.Interaction):
                 description=f"Tu as déjà une clé valide.\n\n**Ta clé :**\n```\n{existing['key']}\n```",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name="⏱️ Expiration", value=f"Expire dans **{hours}h {minutes}min**", inline=False)
+            embed.add_field(
+                name="⏱️ Expiration",
+                value=f"Expire dans **{hours}h {minutes}min**",
+                inline=False,
+            )
             embed.set_footer(text="L3X BOT — Système de clés")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
         new_key = generate_key(20)
         expires = now + timedelta(hours=24)
-        key_store[user_id] = {"key": new_key, "expires": expires, "username": str(interaction.user)}
+        key_store[user_id] = {
+            "key":      new_key,
+            "expires":  expires,
+            "username": str(interaction.user),
+        }
         _save_store(key_store)
 
-    print(f"🔑 [NOUVELLE CLÉ] Utilisateur : {interaction.user} (ID: {user_id}) | Clé : {new_key}")
+    print(f"🔑 [NOUVELLE CLÉ] {interaction.user} (ID: {user_id}) | Clé : {new_key}")
 
     embed = discord.Embed(
         title="✅ Nouvelle clé générée !",
@@ -500,7 +595,7 @@ async def slash_key(interaction: discord.Interaction):
         ),
         color=discord.Color.green(),
     )
-    embed.add_field(name="⏱️ Durée", value="**24 heures**", inline=False)
+    embed.add_field(name="⏱️ Durée",     value="**24 heures**",                   inline=False)
     embed.add_field(name="⚠️ Important", value="Clé personnelle — ne pas partager.", inline=False)
     embed.set_footer(text="L3X BOT — Système de clés")
     await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -511,28 +606,32 @@ async def slash_key(interaction: discord.Interaction):
 async def slash_linkroblox(interaction: discord.Interaction):
     if interaction.channel_id != ROBLOX_VERIFY_CHANNEL_ID:
         await interaction.response.send_message(
-            f"❌ Tu ne peux utiliser cette commande que dans le salon <#{ROBLOX_VERIFY_CHANNEL_ID}> !",
+            f"❌ Cette commande est réservée au salon <#{ROBLOX_VERIFY_CHANNEL_ID}> !",
             ephemeral=True,
         )
         return
-
-    # Vérifie si l'utilisateur a déjà le rôle
     role = interaction.guild.get_role(ROBLOX_ROLE_ID) if interaction.guild else None
     if role and role in interaction.user.roles:
         await interaction.response.send_message(
             "✅ Tu as déjà le rôle Roblox vérifié !", ephemeral=True
         )
         return
-
     await interaction.response.send_modal(RobloxUsernameModal())
 
 
-# ── /shoprl ───────────────────────────────────────────────────────
-@bot.tree.command(name="shoprl", description="[ADMIN] Force l'affichage de la boutique Rocket League.")
-@app_commands.checks.has_permissions(administrator=True)
-async def slash_shoprl(interaction: discord.Interaction):
-    await send_rl_shop(interaction.channel)
-    await interaction.response.send_message("✅ Boutique envoyée.", ephemeral=True)
+# ── /invite ───────────────────────────────────────────────────────
+@bot.tree.command(name="invite", description="Obtiens le lien d'invitation du serveur.")
+async def slash_invite(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📨 Invite tes amis !",
+        description=(
+            f"**Rejoins le serveur {SERVER_NAME} :**\n{DISCORD_INVITE}\n\n"
+            "🔧 Outils OSINT / CSINT · 🎮 Rocket League FR · 🔑 Système de clés."
+        ),
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text="L3X BOT")
+    await interaction.response.send_message(embed=embed)
 
 
 # ── /versionrl ────────────────────────────────────────────────────
@@ -609,10 +708,76 @@ async def slash_animesama(interaction: discord.Interaction, nom: str):
     await interaction.response.send_message(embed=embed, view=AnimeView(nom), ephemeral=True)
 
 
-# ── /keys (admin) ─────────────────────────────────────────────────
+# ── /bumpstatus ───────────────────────────────────────────────────
+@bot.tree.command(name="bumpstatus", description="Affiche le statut du bump Disboard automatique.")
+async def slash_bumpstatus(interaction: discord.Interaction):
+    now      = datetime.now(timezone.utc)
+    last_str = (
+        bot.last_bump_success.strftime("%H:%M:%S UTC")
+        if bot.last_bump_success else "Pas encore effectué"
+    )
+    if bot.next_bump_at:
+        delta    = bot.next_bump_at - now
+        next_str = (
+            f"Dans **{max(0, int(delta.total_seconds() // 60))} minutes**"
+            if delta.total_seconds() > 0 else "Imminent"
+        )
+    else:
+        next_str = "Inconnu"
+
+    embed = discord.Embed(title="🔄 Statut Bump Disboard", color=discord.Color.blurple())
+    embed.add_field(name="Dernier bump",  value=last_str,               inline=False)
+    embed.add_field(name="Prochain bump", value=next_str,               inline=False)
+    embed.add_field(name="Intervalle",    value="Toutes les **2 heures**", inline=False)
+    embed.set_footer(text="L3X BOT")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ── /listpartners ─────────────────────────────────────────────────
+@bot.tree.command(name="listpartners", description="Liste tous les partenaires actifs.")
+async def slash_listpartners(interaction: discord.Interaction):
+    with _partner_lock:
+        snapshot = list(partners)
+
+    if not snapshot:
+        await interaction.response.send_message("Aucun partenaire enregistré.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title=f"🤝 {len(snapshot)} partenaire(s) actif(s)",
+        color=discord.Color.gold(),
+    )
+    for p in snapshot:
+        embed.add_field(
+            name=p["name"],
+            value=f"[Rejoindre]({p['invite']}) — {p['description'][:80]}",
+            inline=False,
+        )
+    embed.set_footer(text="L3X BOT")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ══════════════════════════════════════════════════════════════════
+# COMMANDES ADMIN
+# ══════════════════════════════════════════════════════════════════
+
+# ── /shoprl ───────────────────────────────────────────────────────
+@bot.tree.command(name="shoprl", description="[ADMIN] Force l'affichage de la boutique Rocket League.")
+async def slash_shoprl(interaction: discord.Interaction):
+    if not _is_admin(interaction):
+        await interaction.response.send_message("❌ Permissions insuffisantes.", ephemeral=True)
+        return
+    await send_rl_shop(interaction.channel)
+    await interaction.response.send_message("✅ Boutique envoyée.", ephemeral=True)
+
+
+# ── /keys ─────────────────────────────────────────────────────────
 @bot.tree.command(name="keys", description="[ADMIN] Liste toutes les clés actives.")
-@app_commands.checks.has_permissions(administrator=True)
 async def slash_keys(interaction: discord.Interaction):
+    if not _is_admin(interaction):
+        await interaction.response.send_message("❌ Permissions insuffisantes.", ephemeral=True)
+        return
+
     cleanup_expired_keys()
     now = datetime.now(timezone.utc)
     with _store_lock:
@@ -638,11 +803,14 @@ async def slash_keys(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# ── /revokekey (admin) ────────────────────────────────────────────
+# ── /revokekey ────────────────────────────────────────────────────
 @bot.tree.command(name="revokekey", description="[ADMIN] Révoque la clé d'un utilisateur.")
-@app_commands.checks.has_permissions(administrator=True)
 @app_commands.describe(user="L'utilisateur dont révoquer la clé")
 async def slash_revokekey(interaction: discord.Interaction, user: discord.Member):
+    if not _is_admin(interaction):
+        await interaction.response.send_message("❌ Permissions insuffisantes.", ephemeral=True)
+        return
+
     uid = str(user.id)
     with _store_lock:
         if uid in key_store:
@@ -652,10 +820,99 @@ async def slash_revokekey(interaction: discord.Interaction, user: discord.Member
         else:
             removed = False
 
-    if removed:
-        await interaction.response.send_message(f"✅ Clé de {user} révoquée.", ephemeral=True)
-    else:
-        await interaction.response.send_message(f"❌ {user} n'a pas de clé active.", ephemeral=True)
+    msg = f"✅ Clé de {user} révoquée." if removed else f"❌ {user} n'a pas de clé active."
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
+# ── /manualbump ───────────────────────────────────────────────────
+@bot.tree.command(name="manualbump", description="[ADMIN] Force un bump Disboard immédiat.")
+async def slash_manualbump(interaction: discord.Interaction):
+    if not _is_admin(interaction):
+        await interaction.response.send_message("❌ Permissions insuffisantes.", ephemeral=True)
+        return
+
+    channel = bot.get_channel(BUMP_CHANNEL_ID)
+    if not channel:
+        await interaction.response.send_message(
+            f"❌ Salon bump introuvable (ID: {BUMP_CHANNEL_ID}).", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        await channel.send("!d bump")
+        await interaction.followup.send("✅ Bump forcé envoyé.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
+
+
+# ── /addpartner ───────────────────────────────────────────────────
+@bot.tree.command(name="addpartner", description="[ADMIN] Ajoute un serveur partenaire.")
+@app_commands.describe(
+    name="Nom du serveur partenaire",
+    invite="Lien d'invitation (https://discord.gg/xxx)",
+    description="Description courte du serveur",
+    banner="URL d'une image bannière (optionnel)",
+)
+async def slash_addpartner(
+    interaction: discord.Interaction,
+    name: str,
+    invite: str,
+    description: str,
+    banner: str = "",
+):
+    if not _is_admin(interaction):
+        await interaction.response.send_message("❌ Permissions insuffisantes.", ephemeral=True)
+        return
+
+    if not invite.startswith("https://discord.gg/"):
+        await interaction.response.send_message(
+            "❌ Le lien doit commencer par `https://discord.gg/`.", ephemeral=True
+        )
+        return
+
+    new_partner = {
+        "name":        name.strip(),
+        "invite":      invite.strip(),
+        "description": description.strip(),
+        "banner":      banner.strip(),
+        "added_by":    str(interaction.user),
+        "added_at":    datetime.now(timezone.utc).isoformat(),
+    }
+
+    with _partner_lock:
+        if any(p["invite"] == new_partner["invite"] for p in partners):
+            await interaction.response.send_message("❌ Ce partenaire existe déjà.", ephemeral=True)
+            return
+        partners.append(new_partner)
+        _save_partners(partners)
+
+    channel = bot.get_channel(PARTNER_CHANNEL_ID)
+    if channel:
+        await _post_partner_embed(channel, new_partner)
+
+    await interaction.response.send_message(
+        f"✅ Partenaire **{name}** ajouté et posté dans <#{PARTNER_CHANNEL_ID}>.", ephemeral=True
+    )
+
+
+# ── /removepartner ────────────────────────────────────────────────
+@bot.tree.command(name="removepartner", description="[ADMIN] Supprime un partenaire.")
+@app_commands.describe(name="Nom exact du serveur à supprimer")
+async def slash_removepartner(interaction: discord.Interaction, name: str):
+    if not _is_admin(interaction):
+        await interaction.response.send_message("❌ Permissions insuffisantes.", ephemeral=True)
+        return
+
+    with _partner_lock:
+        before = len(partners)
+        partners[:] = [p for p in partners if p["name"].lower() != name.strip().lower()]
+        removed = len(partners) < before
+        if removed:
+            _save_partners(partners)
+
+    msg = f"✅ Partenaire **{name}** supprimé." if removed else f"❌ Partenaire **{name}** introuvable."
+    await interaction.response.send_message(msg, ephemeral=True)
 
 
 # ── Gestion erreurs slash ──────────────────────────────────────────
@@ -669,11 +926,10 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     if not interaction.response.is_done():
         await interaction.response.send_message(msg, ephemeral=True)
     else:
-        await interaction.followup.send(msg, ephemeral=True)   # FIX #3
-
+        await interaction.followup.send(msg, ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════
-# 9. LOOPS AUTOMATIQUES
+# 12. LOOPS AUTOMATIQUES
 # ══════════════════════════════════════════════════════════════════
 
 @tasks.loop(time=time(hour=20, minute=0, tzinfo=timezone.utc))
@@ -681,6 +937,46 @@ async def daily_rl_shop():
     channel = bot.get_channel(RL_SHOP_CHANNEL_ID)
     if channel:
         await send_rl_shop(channel)
+
+
+@tasks.loop(seconds=BUMP_INTERVAL_SEC)
+async def auto_bump():
+    channel = bot.get_channel(BUMP_CHANNEL_ID)
+    if not channel:
+        print(f"❌ Salon bump introuvable (ID: {BUMP_CHANNEL_ID})")
+        return
+    try:
+        await channel.send("!d bump")
+        bot.last_bump_success = datetime.now(timezone.utc)
+        bot.next_bump_at      = bot.last_bump_success + timedelta(seconds=BUMP_INTERVAL_SEC)
+        print(f"✅ Bump Disboard envoyé à {bot.last_bump_success.strftime('%H:%M:%S UTC')}")
+    except discord.Forbidden:
+        print("❌ Permissions manquantes — salon bump.")
+    except Exception as e:
+        print(f"❌ Erreur bump : {e}")
+
+@auto_bump.before_loop
+async def before_bump():
+    await bot.wait_until_ready()
+    await asyncio.sleep(10)
+
+
+@tasks.loop(hours=6)
+async def rotate_partner_embeds():
+    global _partner_rotation_index
+    channel = bot.get_channel(PARTNER_CHANNEL_ID)
+    if not channel:
+        return
+    with _partner_lock:
+        if not partners:
+            return
+        partner = partners[_partner_rotation_index % len(partners)]
+        _partner_rotation_index = (_partner_rotation_index + 1) % len(partners)
+    await _post_partner_embed(channel, partner)
+
+@rotate_partner_embeds.before_loop
+async def before_rotate():
+    await bot.wait_until_ready()
 
 
 @tasks.loop(minutes=5)
@@ -839,14 +1135,14 @@ async def check_twitch_streams():
     if not token:
         return
 
-    headers = {"Client-ID": TWITCH_CLIENT_ID, "Authorization": f"Bearer {token}"}
+    headers           = {"Client-ID": TWITCH_CLIENT_ID, "Authorization": f"Bearer {token}"}
     active_this_check: set[str] = set()
-    all_ok = True
+    all_ok            = True
 
     for i in range(0, len(STREAMERS), 100):
         chunk   = STREAMERS[i:i + 100]
         params  = [("user_login", s) for s in chunk]
-        streams: list = []                 # FIX #4 — initialisé avant la boucle d'attempts
+        streams: list = []
 
         for attempt in range(2):
             try:
@@ -917,7 +1213,7 @@ async def check_twitch_streams():
 
 
 # ══════════════════════════════════════════════════════════════════
-# 10. DÉMARRAGE
+# 13. DÉMARRAGE
 # ══════════════════════════════════════════════════════════════════
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
