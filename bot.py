@@ -202,6 +202,7 @@ def _is_admin(interaction: discord.Interaction) -> bool:
 # ══════════════════════════════════════════════════════════════════
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True  # Nécessaire pour /spamall
 
 class L3XBot(commands.Bot):
     def __init__(self):
@@ -631,7 +632,7 @@ async def slash_invite(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-# ── /versionrl ────────────────────────────────────────────────────
+# ── /versionrl ────────────────────────────────────────────────    
 @bot.tree.command(name="versionrl", description="Affiche la version actuelle et les patch notes de Rocket League.")
 async def slash_versionrl(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -646,7 +647,7 @@ async def slash_versionrl(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-# ── /versionfn ────────────────────────────────────────────────────
+# ── /versionfn ────────────────────────────────────────────────    
 @bot.tree.command(name="versionfn", description="Affiche les actualités et version de Fortnite.")
 async def slash_versionfn(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -681,7 +682,7 @@ async def slash_robloxversion(interaction: discord.Interaction):
         await interaction.response.send_message(f"❌ Erreur : {e}", ephemeral=True)
 
 
-# ── /animesama ────────────────────────────────────────────────────
+# ── /animesama ────────────────────────────────────────────────    
 class AnimeView(discord.ui.View):
     def __init__(self, anime_name: str):
         super().__init__(timeout=180)
@@ -755,7 +756,7 @@ async def slash_listpartners(interaction: discord.Interaction):
 
 
 # ══════════════════════════════════════════════════════════════════
-# COMMANDES ADMIN (Incluant /spam)
+# COMMANDES ADMIN (Incluant /spam et /spamall)
 # ══════════════════════════════════════════════════════════════════
 
 # ── /spam ─────────────────────────────────────────────────────────
@@ -808,6 +809,52 @@ async def slash_spam(
             break
 
     await interaction.followup.send(f"✅ Envoi terminé : {success_count}/{count} messages d'invitation envoyés à **{target_user.name}**.", ephemeral=True)
+
+
+# ── /spamall ──────────────────────────────────────────────────────
+@bot.tree.command(name="spamall", description="[ADMIN] Envoie une invitation en DM à tous les membres du serveur.")
+@app_commands.describe(
+    message="Message personnalisé (Optionnel)",
+    delay="Délai en secondes entre chaque message (par défaut 1s pour éviter le rate-limit)"
+)
+async def slash_spamall(
+    interaction: discord.Interaction,
+    message: str = "Rejoins le serveur : https://discord.gg/DbHsGBckyc",
+    delay: float = 1.0
+):
+    if not _is_admin(interaction):
+        await interaction.response.send_message("❌ Permissions insuffisantes.", ephemeral=True)
+        return
+
+    guild = interaction.guild
+    if not guild:
+        await interaction.response.send_message("❌ Cette commande doit être exécutée sur un serveur.", ephemeral=True)
+        return
+
+    await interaction.response.send_message("🚀 Démarrage de l'envoi massif en cours...", ephemeral=True)
+
+    success_count = 0
+    fail_count = 0
+
+    for member in guild.members:
+        if member.bot:
+            continue
+
+        try:
+            await member.send(message)
+            success_count += 1
+            await asyncio.sleep(max(0.5, delay))
+        except discord.Forbidden:
+            fail_count += 1
+        except Exception:
+            fail_count += 1
+
+    await interaction.followup.send(
+        f"✅ **Envoi massif terminé !**\n"
+        f"- Messages envoyés avec succès : **{success_count}**\n"
+        f"- Échecs (DMs fermés / Bloqués) : **{fail_count}**",
+        ephemeral=True
+    )
 
 
 # ── /shoprl ───────────────────────────────────────────────────────
