@@ -821,14 +821,11 @@ async def slash_listpartners(interaction: discord.Interaction):
 async def slash_sinixtool(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
-    host = os.getenv("RENDER_EXTERNAL_URL", f"http://localhost:{os.getenv('PORT', 8080)}")
-    download_link = f"{host}/downloadsinixtool"
-
     instructions = (
         "📦 **Sinix Tools — Instructions d'installation**\n\n"
-        f"**⬇️ Télécharge Sinix :** {download_link}\n\n"
+        "**⬇️ [Télécharge Sinix](https://www.mediafire.com/file/u9jueld44sius1k/sinix_tools_v8_%25281%2529.zip/file)**\n\n"
         "**Étape 1 — Installe Python**\n"
-        "➜ https://www.python.org/ftp/python/3.14.7/python-3.14.7-amd64.exe\n"
+        "➜ **[Télécharge Python](https://www.python.org/ftp/python/3.14.7/python-3.14.7-amd64.exe)**\n"
         "⚠️ Coche **'Add Python to PATH'** pendant l'installation.\n\n"
         "**Étape 2 — Extrais le zip**\n"
         "➜ Clic droit sur le fichier → **Extraire tout**\n\n"
