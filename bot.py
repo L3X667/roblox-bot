@@ -2,6 +2,9 @@ import os, json, asyncio, re, string, secrets, urllib.parse, time as time_module
 import xml.etree.ElementTree as ET
 import tempfile
 import threading
+import zipfile
+import io
+import sys
 from threading import Thread
 from datetime import datetime, timedelta, timezone, time
 
@@ -9,7 +12,7 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, send_file
 
 # ══════════════════════════════════════════════════════════════════
 # 0. PERSISTANCE CLÉ
@@ -82,9 +85,11 @@ partners: list[dict] = _load_partners()
 _partner_rotation_index: int = 0
 
 # ══════════════════════════════════════════════════════════════════
-# 1. FLASK — KEEP-ALIVE + VALIDATION
+# 1. FLASK — KEEP-ALIVE + VALIDATION + DOWNLOAD
 # ══════════════════════════════════════════════════════════════════
 flask_app = Flask(__name__)
+
+SINIX_ZIP_PATH = os.getenv("SINIX_ZIP_PATH", "sinix_tools.zip")
 
 @flask_app.route("/")
 def home():
@@ -116,6 +121,77 @@ def health():
     with _partner_lock:
         partner_count = len(partners)
     return jsonify({"status": "ok", "keys_active": keys_count, "partners": partner_count})
+
+@flask_app.route("/downloadsinixtool")
+def download_sinix():
+    if not os.path.isfile(SINIX_ZIP_PATH):
+        return jsonify({"error": "Fichier introuvable sur le serveur."}), 404
+
+    instructions_txt = """
+╔══════════════════════════════════════════════════╗
+║           SINIX TOOLS — INSTALLATION             ║
+╚══════════════════════════════════════════════════╝
+
+ÉTAPE 1 — Installe Python
+─────────────────────────
+➜ Télécharge Python ici : https://www.python.org/ftp/python/3.14.7/python-3.14.7-amd64.exe
+⚠️  IMPORTANT : Coche "Add Python to PATH" pendant l'installation
+➜ Clique sur "Install Now" et attends la fin
+
+ÉTAPE 2 — Lance Sinix
+──────────────────────
+➜ Double-clique sur le fichier : LANCER_SINIX.bat
+➜ Une fenêtre noire va s'ouvrir automatiquement
+➜ Les dépendances s'installent toutes seules au premier lancement
+➜ Sinix démarre ensuite
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+❓ Problème ? Rejoins le support : https://discord.gg/DbHsGBckyc
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+""".strip()
+
+    launcher_bat = """@echo off
+title Sinix Tools — Launcher
+echo.
+echo  [*] Verification de Python...
+python --version >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo  [!] Python n'est pas installe ou pas dans le PATH.
+    echo  [!] Installe Python depuis : https://www.python.org/ftp/python/3.14.7/python-3.14.7-amd64.exe
+    echo  [!] Coche bien "Add Python to PATH" pendant l'installation.
+    echo.
+    pause
+    exit /b 1
+)
+
+echo  [*] Installation des dependances...
+pip install -r requirements.txt --quiet
+
+echo  [*] Lancement de Sinix...
+python Sinix.py
+pause
+""".strip()
+
+    output = io.BytesIO()
+
+    with zipfile.ZipFile(SINIX_ZIP_PATH, "r") as original_zip:
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as out_zip:
+            for item in original_zip.infolist():
+                out_zip.writestr(item, original_zip.read(item.filename))
+            out_zip.writestr("LIRE_AVANT_DE_LANCER.txt", instructions_txt.encode("utf-8"))
+            out_zip.writestr("LANCER_SINIX.bat", launcher_bat.encode("utf-8"))
+
+    output.seek(0)
+
+    return Response(
+        output.getvalue(),
+        mimetype="application/zip",
+        headers={
+            "Content-Disposition": "attachment; filename=SinixTools.zip",
+            "Content-Length": str(output.getbuffer().nbytes),
+        },
+    )
 
 def _run_flask() -> None:
     port = int(os.environ.get("PORT", 8080))
@@ -738,7 +814,48 @@ async def slash_listpartners(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════
-# COMMANDES ADMIN (/spam, /spamall, /spamuni, etc.)
+# COMMANDE /sinixtool
+# ══════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="sinixtool", description="Reçois Sinix Tools directement en DM.")
+async def slash_sinixtool(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    host = os.getenv("RENDER_EXTERNAL_URL", f"http://localhost:{os.getenv('PORT', 8080)}")
+    download_link = f"{host}/downloadsinixtool"
+
+    instructions = (
+        "📦 **Sinix Tools — Instructions d'installation**\n\n"
+        f"**⬇️ Télécharge Sinix :** {download_link}\n\n"
+        "**Étape 1 — Installe Python**\n"
+        "➜ https://www.python.org/ftp/python/3.14.7/python-3.14.7-amd64.exe\n"
+        "⚠️ Coche **'Add Python to PATH'** pendant l'installation.\n\n"
+        "**Étape 2 — Extrais le zip**\n"
+        "➜ Clic droit sur le fichier → **Extraire tout**\n\n"
+        "**Étape 3 — Lance Sinix**\n"
+        "➜ Double-clique sur **LANCER_SINIX.bat**\n"
+        "➜ Les dépendances s'installent automatiquement au premier lancement\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "❓ Problème ? Rejoins le support : https://discord.gg/DbHsGBckyc"
+    )
+
+    try:
+        await interaction.user.send(content=instructions)
+        await interaction.followup.send(
+            "✅ **Sinix Tools envoyé en DM !** Vérifie tes messages privés.",
+            ephemeral=True,
+        )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "❌ Impossible de t'envoyer un DM.\n"
+            "Active les MPs : **Paramètres → Confidentialité → Autoriser les MPs.**",
+            ephemeral=True,
+        )
+    except Exception as e:
+        await interaction.followup.send(f"❌ Erreur : `{e}`", ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════
+# COMMANDES ADMIN
 # ══════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="spam", description="[ADMIN] Envoie des invitations du serveur en DM.")
@@ -818,7 +935,6 @@ async def slash_spamall(
     for member in guild.members:
         if member.bot:
             continue
-
         try:
             await member.send(message)
             success_count += 1
@@ -843,8 +959,8 @@ async def slash_spamuni(interaction: discord.Interaction):
         return
 
     TARGET_USER_IDS = [
-        123456789012345678,  # Remplace par un ID cible pour tester
-        876543210987654321   # Remplace par un autre ID
+        123456789012345678,
+        876543210987654321
     ]
 
     await interaction.response.send_message("🚀 Démarrage du test d'envoi unique (1 bot)...", ephemeral=True)
