@@ -1,0 +1,9 @@
+app = "l3x-bot"
+primary_region = "cdg"
+
+[processes]
+  worker = "python bot.py"
+
+[http_service]
+  internal_port = 8080
+  force_https = false
