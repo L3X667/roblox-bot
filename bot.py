@@ -1,4 +1,5 @@
 import os, json, asyncio, re, string, secrets, urllib.parse, time as time_module
+from pathlib import Path
 import xml.etree.ElementTree as ET
 import tempfile
 import threading
@@ -214,6 +215,7 @@ TWITCH_CHANNEL_ID        = int(os.getenv("TWITCH_CHANNEL_ID",     15172332632934
 RL_SHOP_CHANNEL_ID       = int(os.getenv("RL_SHOP_CHANNEL_ID",    1515508545418952734))
 RL_UPDATES_CHANNEL_ID    = int(os.getenv("RL_UPDATES_CHANNEL_ID", 1534708870352732241))
 FN_UPDATES_CHANNEL_ID    = int(os.getenv("FN_UPDATES_CHANNEL_ID", 1534724078584336384))
+INTERPOL_CHANNEL_ID      = int(os.getenv("INTERPOL_CHANNEL_ID",   1537594983970775150))
 
 KEY_CHANNEL_ID           = 1534835833922785431
 ROBLOX_VERIFY_CHANNEL_ID = 1518014650829242388
@@ -304,6 +306,7 @@ class L3XBot(commands.Bot):
         daily_rl_shop.start()
         auto_bump.start()
         rotate_partner_embeds.start()
+        check_interpol_notices.start()
 
     async def close(self):
         if self.session and not self.session.closed:
@@ -329,6 +332,24 @@ current_rl_version:        str        = "v2.72"
 last_fn_news_title:        str | None = None
 current_fn_version:        str        = "v39.00"
 currently_live:            set[str]   = set()
+
+# INTERPOL — notices rouges connues (persistées sur disque)
+INTERPOL_STATE_FILE = Path("interpol_known.json")
+
+def _interpol_load_ids() -> set[str]:
+    try:
+        return set(json.loads(INTERPOL_STATE_FILE.read_text()).get("ids", []))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
+
+def _interpol_save_ids(ids: set[str]) -> None:
+    dir_ = str(INTERPOL_STATE_FILE.parent) or "."
+    with tempfile.NamedTemporaryFile("w", dir=dir_, delete=False, suffix=".tmp") as tmp:
+        json.dump({"ids": list(ids)}, tmp)
+        tmp_path = tmp.name
+    os.replace(tmp_path, str(INTERPOL_STATE_FILE))
+
+interpol_known_ids: set[str] = _interpol_load_ids()
 
 # ══════════════════════════════════════════════════════════════════
 # 7. HELPERS
@@ -1445,6 +1466,203 @@ async def check_twitch_streams():
 
     if all_ok:
         currently_live.intersection_update(active_this_check)
+
+@bot.tree.command(name="interpol", description="Affiche les 20 premières personnes de la liste rouge INTERPOL.")
+async def slash_interpol(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    target_channel = bot.get_channel(INTERPOL_CHANNEL_ID)
+    if not target_channel:
+        await interaction.followup.send("❌ Salon INTERPOL introuvable.", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        f"🔴 Récupération des 20 premières notices rouges en cours...",
+        ephemeral=True,
+    )
+
+    try:
+        async with bot.session.get(
+            _INTERPOL_API,
+            params={"page": 1, "resultPerPage": 20},
+            headers=_INTERPOL_HEADERS,
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            resp.raise_for_status()
+            data    = await resp.json()
+            notices = data.get("_embedded", {}).get("notices", [])[:20]
+    except Exception as e:
+        await interaction.followup.send(f"❌ Erreur API INTERPOL : {e}", ephemeral=True)
+        return
+
+    posted = 0
+    for notice in notices:
+        entity_id = _interpol_entity_id(notice)
+        if not entity_id:
+            continue
+        try:
+            detail    = await _interpol_fetch_detail(entity_id)
+            photo_url = await _interpol_fetch_photo(entity_id)
+            embed     = _interpol_build_embed(detail, photo_url)
+            await target_channel.send(embed=embed)
+            posted += 1
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            print(f"[INTERPOL /cmd] Erreur notice {entity_id} : {e}")
+
+    await interaction.followup.send(
+        f"✅ {posted} notices envoyées dans <#{INTERPOL_CHANNEL_ID}>.",
+        ephemeral=True,
+    )
+
+# ══════════════════════════════════════════════════════════════════
+# 12b. INTERPOL — NOTICES ROUGES
+# ══════════════════════════════════════════════════════════════════
+_INTERPOL_API     = "https://ws-public.interpol.int/notices/v1/red"
+_INTERPOL_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; L3XBot/1.0)", "Accept": "application/json"}
+
+async def _interpol_fetch_all_ids() -> list[dict]:
+    """Récupère toutes les notices publiques en paginant l'API JSON d'INTERPOL."""
+    results = []
+    page    = 1
+    async with bot.session.get(
+        _INTERPOL_API,
+        params={"page": 1, "resultPerPage": 160},
+        headers=_INTERPOL_HEADERS,
+        timeout=aiohttp.ClientTimeout(total=15),
+    ) as resp:
+        resp.raise_for_status()
+        data    = await resp.json()
+        total   = data.get("total", 0)
+        notices = data.get("_embedded", {}).get("notices", [])
+        results.extend(notices)
+
+    while len(results) < total:
+        page += 1
+        async with bot.session.get(
+            _INTERPOL_API,
+            params={"page": page, "resultPerPage": 160},
+            headers=_INTERPOL_HEADERS,
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            resp.raise_for_status()
+            batch = resp.json if resp.status != 200 else (await resp.json())
+            chunk = batch.get("_embedded", {}).get("notices", []) if isinstance(batch, dict) else []
+            if not chunk:
+                break
+            results.extend(chunk)
+        await asyncio.sleep(0.5)
+
+    return results
+
+def _interpol_entity_id(notice: dict) -> str:
+    href = notice.get("_links", {}).get("self", {}).get("href", "")
+    return href.rstrip("/").split("/")[-1]
+
+async def _interpol_fetch_detail(entity_id: str) -> dict:
+    url = f"{_INTERPOL_API}/{entity_id}"
+    async with bot.session.get(url, headers=_INTERPOL_HEADERS, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+        resp.raise_for_status()
+        return await resp.json()
+
+async def _interpol_fetch_photo(entity_id: str) -> str | None:
+    url = f"{_INTERPOL_API}/{entity_id}/images"
+    try:
+        async with bot.session.get(url, headers=_INTERPOL_HEADERS, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status != 200:
+                return None
+            data   = await resp.json()
+            images = data.get("_embedded", {}).get("images", [])
+            if images:
+                return images[0].get("_links", {}).get("self", {}).get("href")
+    except Exception:
+        pass
+    return None
+
+def _interpol_build_embed(detail: dict, photo_url: str | None) -> discord.Embed:
+    forename = detail.get("forename") or "Inconnu"
+    name     = detail.get("name")     or "Inconnu"
+    sex_raw  = detail.get("sex_id")   or "U"
+    dob      = detail.get("date_of_birth")  or "Inconnue"
+    pob      = detail.get("place_of_birth") or "Inconnu"
+
+    nats = detail.get("nationalities") or []
+    nat_str = ", ".join(nats) if nats else "Inconnue"
+
+    langs = detail.get("languages_spoken_ids") or []
+    lang_str = ", ".join(langs) if langs else "Inconnues"
+
+    warrants    = detail.get("arrest_warrants") or []
+    charge_lines = []
+    for w in warrants:
+        charge  = w.get("charge") or w.get("charge_translation") or "Non précisée"
+        country = w.get("issuing_country_id") or ""
+        charge_lines.append(f"• [{country}] {charge}" if country else f"• {charge}")
+    charges_str = "\n".join(charge_lines) if charge_lines else "Non précisée"
+
+    sex_display = {"M": "Masculin ♂", "F": "Féminin ♀", "U": "Inconnu"}.get(sex_raw, sex_raw)
+
+    embed = discord.Embed(
+        title=f"🔴 Nouvelle Notice Rouge — {forename} {name}",
+        url="https://www.interpol.int/fr/Notre-action/Notices/Notices-rouges/Voir-les-notices-rouges",
+        color=0xCC0000,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="👤 Nom de famille",    value=name,        inline=True)
+    embed.add_field(name="📛 Prénom",            value=forename,    inline=True)
+    embed.add_field(name="⚥ Sexe",              value=sex_display, inline=True)
+    embed.add_field(name="🎂 Date de naissance", value=dob,         inline=True)
+    embed.add_field(name="📍 Lieu de naissance", value=pob,         inline=True)
+    embed.add_field(name="🌍 Nationalité(s)",    value=nat_str,     inline=True)
+    embed.add_field(name="🗣️ Langue(s) parlée(s)", value=lang_str,  inline=False)
+    embed.add_field(name="⚖️ Qualification(s) de l'infraction", value=charges_str, inline=False)
+    embed.set_footer(text="Source : INTERPOL — Notice Rouge Publique • L3X BOT")
+
+    if photo_url:
+        embed.set_thumbnail(url=photo_url)
+
+    return embed
+
+@tasks.loop(minutes=5)
+async def check_interpol_notices():
+    global interpol_known_ids
+    if not INTERPOL_CHANNEL_ID:
+        return
+    try:
+        notices = await _interpol_fetch_all_ids()
+
+        new_notices = [n for n in notices if _interpol_entity_id(n) not in interpol_known_ids]
+        if not new_notices:
+            return
+
+        channel = bot.get_channel(INTERPOL_CHANNEL_ID)
+        if not channel:
+            print(f"[INTERPOL] Channel {INTERPOL_CHANNEL_ID} introuvable.")
+            return
+
+        print(f"[INTERPOL] {len(new_notices)} nouvelle(s) notice(s) détectée(s).")
+
+        for notice in new_notices:
+            entity_id = _interpol_entity_id(notice)
+            if not entity_id:
+                continue
+            try:
+                detail    = await _interpol_fetch_detail(entity_id)
+                photo_url = await _interpol_fetch_photo(entity_id)
+                embed     = _interpol_build_embed(detail, photo_url)
+                await channel.send(embed=embed)
+                interpol_known_ids.add(entity_id)
+                _interpol_save_ids(interpol_known_ids)
+                await asyncio.sleep(1)
+            except aiohttp.ClientResponseError as e:
+                print(f"[INTERPOL] Erreur notice {entity_id} : HTTP {e.status}")
+            except Exception as e:
+                print(f"[INTERPOL] Erreur notice {entity_id} : {e}")
+
+    except asyncio.TimeoutError:
+        print("[INTERPOL] Timeout API")
+    except Exception as e:
+        print(f"[INTERPOL] Erreur poll : {e}")
 
 # ══════════════════════════════════════════════════════════════════
 # 13. DÉMARRAGE
